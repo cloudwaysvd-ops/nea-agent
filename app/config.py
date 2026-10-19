@@ -236,6 +236,11 @@ class Settings(BaseSettings):
     database_url: str = ""
     port: int = 8000
 
+    # Fork: eventos salientes a un orquestador propio (app/eventos.py). Vacía
+    # = apagado, igual que la imagen oficial. El token viaja en `X-Nea-Token`.
+    eventos_webhook_url: str = ""
+    eventos_webhook_token: str = ""
+
     # Desarrollo: loguear el JSON crudo de mensajes no-texto entrantes para
     # capturar los formatos reales de Meta (spec 002). Apagar al terminar.
     capture_payloads: bool = False

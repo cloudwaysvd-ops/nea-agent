@@ -20,6 +20,7 @@ from app import media
 from app.agenda import agenda_vigente
 from app.config import canonical_identity
 from app.crm import CrmConflict, CrmError, CrmUnreachable
+from app.eventos import avisar_handoff
 from app.formato import a_whatsapp
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.llm import LlmExhausted
@@ -288,6 +289,12 @@ async def _handoff_de_emergencia(ctx: AppContext, identity: str, turno: _Turno) 
         identity,
         turno.crm_conversation_id,
     )
+    avisar_handoff(
+        ctx,
+        identity=identity,
+        crm_conversation_id=turno.crm_conversation_id,
+        motivo="error",
+    )
 
 
 def _reprogramar(
@@ -418,6 +425,13 @@ async def _vigilar(ctx: AppContext, identity: str, pendiente: _Pendiente) -> Non
                     "error registrado en %s",
                     identity,
                     conv_id,
+                )
+                avisar_handoff(
+                    ctx,
+                    identity=identity,
+                    crm_conversation_id=str(conv_id),
+                    motivo="error",
+                    context=context,
                 )
                 return
     except asyncio.CancelledError:
@@ -659,7 +673,14 @@ async def run_turn(
             identity,
             exc,
         )
-        await _safe_handoff(ctx, str(crm_conv_id), "error", turno)
+        await _safe_handoff(
+            ctx,
+            str(crm_conv_id),
+            "error",
+            turno,
+            identity=identity,
+            context=context,
+        )
         await ctx.store.update_conversation(
             conv.id, phase="cerrada", followup_due_at=None
         )
@@ -680,7 +701,14 @@ async def run_turn(
             final_text = None
         if final_text is None or _respuesta_invalida(final_text, previos):
             logger.error("turno %s: la segunda respuesta tampoco sirve — silencio + handoff error", identity)
-            await _safe_handoff(ctx, str(crm_conv_id), "error", turno)
+            await _safe_handoff(
+                ctx,
+                str(crm_conv_id),
+                "error",
+                turno,
+                identity=identity,
+                context=context,
+            )
             await ctx.store.update_conversation(conv.id, phase="cerrada", followup_due_at=None)
             return
 
@@ -704,7 +732,14 @@ async def run_turn(
     # El handoff se ejecuta DESPUÉS de la despedida (si no, el CRM la rechaza
     # con 409 ai_paused).
     if runtime.handoff_reason is not None:
-        await _safe_handoff(ctx, str(crm_conv_id), runtime.handoff_reason, turno)
+        await _safe_handoff(
+            ctx,
+            str(crm_conv_id),
+            runtime.handoff_reason,
+            turno,
+            identity=identity,
+            context=context,
+        )
 
     # --- Fase + seguimiento -----------------------------------------------
     updates: dict[str, Any] = {"greeted": True}
@@ -1055,7 +1090,13 @@ async def _send(ctx: AppContext, conv_id: int, crm_conv_id: str, text: str) -> b
 
 
 async def _safe_handoff(
-    ctx: AppContext, crm_conv_id: str, reason: str, turno: _Turno | None = None
+    ctx: AppContext,
+    crm_conv_id: str,
+    reason: str,
+    turno: _Turno | None = None,
+    *,
+    identity: str = "",
+    context: dict[str, Any] | None = None,
 ) -> None:
     try:
         await ctx.crm.post_handoff(crm_conv_id, reason)
@@ -1063,6 +1104,14 @@ async def _safe_handoff(
     except CrmError as exc:
         logger.error("no pude registrar el handoff (%s): %s", reason, exc)
         return
+    # Fork: el aviso a los asesores sale DESPUÉS de que el handoff quedó.
+    avisar_handoff(
+        ctx,
+        identity=identity,
+        crm_conversation_id=crm_conv_id,
+        motivo=reason,
+        context=context,
+    )
     # Queda anotado para que la red de seguridad no registre otro encima.
     if turno is not None:
         turno.handoff = reason
