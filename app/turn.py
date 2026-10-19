@@ -20,7 +20,7 @@ from app import media
 from app.agenda import agenda_vigente
 from app.config import canonical_identity
 from app.crm import CrmConflict, CrmError, CrmUnreachable
-from app.eventos import avisar_handoff
+from app.eventos import avanzar_si_cotizo, avisar_handoff
 from app.formato import a_whatsapp
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.llm import LlmExhausted
@@ -728,6 +728,8 @@ async def run_turn(
         sent = await _send(ctx, conv.id, str(crm_conv_id), final_text)
         if sent:
             await ctx.store.add_message(conv.id, "assistant", final_text)
+            # Fork: cotización enviada → la tarjeta avanza (solo adelante).
+            avanzar_si_cotizo(ctx, crm_conversation_id=str(crm_conv_id), texto=final_text)
 
     # El handoff se ejecuta DESPUÉS de la despedida (si no, el CRM la rechaza
     # con 409 ai_paused).

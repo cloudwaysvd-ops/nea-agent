@@ -6,6 +6,10 @@ Dos eventos:
   une el clic de Google Ads (gclid) con este teléfono. Nea lo manda al
   orquestador y lo QUITA del texto antes del LLM: el agente nunca lo ve, así
   que no depende del prompt. La bandeja sí lo ve (el relay va crudo).
+- Cotización (no es un evento al orquestador: va directo al CRM). Cuando Nea
+  ENVÍA una cotización con el formato fijo del perfil («⭐ Garantía N meses» y
+  «💰 $precio»), la tarjeta del lead pasa a `COTIZACION_STAGE` («Cotizado»),
+  solo hacia adelante. Lo decide el código, no el LLM.
 - `handoff`: cuando Nea le pasa una conversación a un humano, el
 CRM solo pausa la IA y lo pinta en la bandeja; nadie se entera si no la tiene
 abierta, y el motivo completo del agente («FUERA DE CATALOGO: Suzuki Ertiga…»)
@@ -48,6 +52,55 @@ _CODIGO = r"ref\.?\s*:?\s*([A-HJ-NP-Z2-9]{6})\b"
 CODIGO_RE = re.compile(_CODIGO, re.IGNORECASE)
 # Lo que se quita del texto: el código con sus paréntesis y el espacio previo.
 _QUITAR_RE = re.compile(r"\s*\(?\s*" + _CODIGO + r"\s*\)?", re.IGNORECASE)
+
+
+# Una cotización trae, por formato fijo del perfil, la garantía en meses y el
+# precio con el emoji de dinero. La confirmación final del pedido trae precio
+# pero no garantía: no cuenta (y de todos modos el CRM solo avanza).
+_GARANTIA_RE = re.compile(r"garant[ií]a\s*:?\s*\d+\s*mes", re.IGNORECASE)
+_PRECIO_RE = re.compile(r"💰\s*\$\s*\d")
+
+
+def es_cotizacion(texto: str | None) -> bool:
+    t = texto or ""
+    return bool(_GARANTIA_RE.search(t) and _PRECIO_RE.search(t))
+
+
+async def _avanzar(ctx: Any, crm_conversation_id: str, etapa: str) -> None:
+    try:
+        r = await ctx.crm.post_stage(crm_conversation_id, etapa)
+        logger.info(
+            "ETAPA %s: %s (conv=%s, desde=%s)",
+            etapa,
+            r.get("status"),
+            crm_conversation_id,
+            (r.get("from") or {}).get("name"),
+        )
+    except Exception as exc:  # 404, red, CRM sin el endpoint: nada escapa
+        logger.warning(
+            "ETAPA %s: no pude mover la tarjeta (conv=%s): %s",
+            etapa,
+            crm_conversation_id,
+            exc,
+        )
+
+
+def avanzar_si_cotizo(
+    ctx: Any, *, crm_conversation_id: str, texto: str | None
+) -> asyncio.Task[Any] | None:
+    """Si lo enviado es una cotización, pide al CRM avanzar la tarjeta. En
+    segundo plano: jamás retrasa ni bloquea la respuesta."""
+    try:
+        etapa = (getattr(ctx.settings, "cotizacion_stage", "") or "").strip()
+        if not etapa or not crm_conversation_id or not es_cotizacion(texto):
+            return None
+        tarea = asyncio.create_task(_avanzar(ctx, crm_conversation_id, etapa))
+        _tareas.add(tarea)
+        tarea.add_done_callback(_tareas.discard)
+        return tarea
+    except Exception:
+        logger.exception("ETAPA: no pude programar el avance — sigo")
+        return None
 
 
 def detectar_codigo(texto: str | None) -> str | None:

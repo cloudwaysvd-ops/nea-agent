@@ -230,3 +230,87 @@ def test_detectar_y_quitar_codigo():
     assert eventos.detectar_codigo(None) is None
     assert eventos.quitar_codigo(TEXTO_CON_CODIGO) == "Hola, solicito asesoría en baterías"
     assert eventos.quitar_codigo("(Ref. C7K2QX)") == "(Ref. C7K2QX)"  # no deja el texto vacío
+
+
+# ------------------------------------------------------------ cotización ---
+
+COTIZACION = (
+    "Para tu Renault Logan te sirven estas 🔋\n\n"
+    "*MAC 42I*\n⭐ Garantía 12 meses\n💰 $385.000 · $345.000 si nos entregas la vieja\n\n"
+    "✅ Instalación a domicilio incluida, no pagas nada aparte.\n"
+    "¿Te la instalamos hoy? Dime en qué zona estás y coordinamos 🙌"
+)
+CONFIRMACION = (
+    "Te confirmo entonces:\n🔋 MAC 42I para tu Renault Logan\n📍 Cl 1 # 2-3, Suba\n"
+    "💰 $345.000 — Nequi, instalación incluida\nEntregas la batería usada\n\n"
+    "¿Todo bien así? Confirmo y sale el domiciliario."
+)
+
+
+def test_es_cotizacion_reconoce_solo_el_formato_fijo():
+    assert eventos.es_cotizacion(COTIZACION)
+    assert not eventos.es_cotizacion(CONFIRMACION), "la confirmación no es cotización"
+    assert not eventos.es_cotizacion("La visita técnica cuesta $70.000, ¿cuál prefieres?")
+    assert not eventos.es_cotizacion("La garantía es de 12 meses.")
+    assert not eventos.es_cotizacion(None)
+
+
+def _stage_route(respx_mock, status=200, body=None):
+    return respx_mock.post(f"{CRM_URL_}/api/bot/stage").mock(
+        return_value=httpx.Response(status, json=body or {"status": "moved", "from": {"name": "Nuevo"}})
+    )
+
+
+CRM_URL_ = "http://crm.test"
+
+
+async def test_cotizacion_enviada_mueve_a_cotizado(respx_mock):
+    ctx = make_ctx(make_settings(cotizacion_stage="Cotizado"))
+    routes = mock_crm_basics(respx_mock)
+    stage = _stage_route(respx_mock)
+    ctx.llm.replies = [LlmReply(content=COTIZACION)]
+
+    await _post(ctx, wa_body(text="tengo un Logan"))
+
+    assert routes["messages"].call_count == 1
+    assert stage.call_count == 1
+    body = json.loads(stage.calls[0].request.content)
+    assert body == {"conversationId": CRM_CONV_ID, "stage": "Cotizado", "mode": "forward"}
+    urls = [str(c.request.url) for c in respx_mock.calls]
+    assert urls.index(f"{CRM_URL_}/api/bot/messages") < urls.index(f"{CRM_URL_}/api/bot/stage"), (
+        "primero sale la cotización, después se mueve la tarjeta"
+    )
+
+
+async def test_respuesta_normal_no_mueve_la_tarjeta(respx_mock):
+    ctx = make_ctx(make_settings(cotizacion_stage="Cotizado"))
+    mock_crm_basics(respx_mock)
+    stage = _stage_route(respx_mock)
+    ctx.llm.replies = [LlmReply(content="¡Hola! ¿Qué carro tienes?")]
+
+    await _post(ctx, wa_body(text="hola"))
+
+    assert stage.call_count == 0
+
+
+async def test_sin_cotizacion_stage_no_mueve_nada(respx_mock):
+    ctx = make_ctx()  # sin COTIZACION_STAGE: como la imagen oficial
+    mock_crm_basics(respx_mock)
+    stage = _stage_route(respx_mock)
+    ctx.llm.replies = [LlmReply(content=COTIZACION)]
+
+    await _post(ctx, wa_body(text="tengo un Logan"))
+
+    assert stage.call_count == 0
+
+
+async def test_crm_sin_endpoint_o_sin_etapa_no_rompe_el_turno(respx_mock):
+    ctx = make_ctx(make_settings(cotizacion_stage="Cotizado"))
+    routes = mock_crm_basics(respx_mock)
+    stage = _stage_route(respx_mock, status=404, body={"code": "stage_not_found"})
+    ctx.llm.replies = [LlmReply(content=COTIZACION)]
+
+    await _post(ctx, wa_body(text="tengo un Logan"))
+
+    assert routes["messages"].call_count == 1, "la cotización salió igual"
+    assert stage.call_count == 1

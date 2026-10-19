@@ -251,6 +251,20 @@ class CrmClient:
         data: dict[str, Any] = resp.json()
         return data
 
+    async def post_stage(self, conversation_id: str, stage: str) -> dict[str, Any]:
+        """Fork: avanza la tarjeta del lead, solo hacia adelante (POST
+        /api/bot/stage del fork del CRM). 200 trae `status`: moved, already o
+        skipped_not_forward; 404 = etapa inexistente o CRM sin el endpoint."""
+        resp = await self._request(
+            "POST",
+            "/api/bot/stage",
+            json={"conversationId": conversation_id, "stage": stage, "mode": "forward"},
+        )
+        if resp.status_code != 200:
+            raise CrmError(f"stage devolvió {resp.status_code}")
+        data: dict[str, Any] = resp.json()
+        return data
+
     async def post_handoff(self, conversation_id: str, reason: str | None = None) -> None:
         resp = await self._request(
             "POST",
