@@ -6,10 +6,9 @@ Dos eventos:
   une el clic de Google Ads (gclid) con este teléfono. Nea lo manda al
   orquestador y lo QUITA del texto antes del LLM: el agente nunca lo ve, así
   que no depende del prompt. La bandeja sí lo ve (el relay va crudo).
-- Cotización (no es un evento al orquestador: va directo al CRM). Cuando Nea
-  ENVÍA una cotización con el formato fijo del perfil («⭐ Garantía N meses» y
-  «💰 $precio»), la tarjeta del lead pasa a `COTIZACION_STAGE` («Cotizado»),
-  solo hacia adelante. Lo decide el código, no el LLM.
+- `cotizado`: Nea ENVIÓ una cotización con el formato fijo del perfil
+  («⭐ Garantía N meses» y «💰 $precio»). El orquestador mueve la tarjeta a
+  «Cotizado», solo hacia adelante. Lo decide el código, no el LLM.
 - `handoff`: cuando Nea le pasa una conversación a un humano, el
 CRM solo pausa la IA y lo pinta en la bandeja; nadie se entera si no la tiene
 abierta, y el motivo completo del agente («FUERA DE CATALOGO: Suzuki Ertiga…»)
@@ -66,40 +65,38 @@ def es_cotizacion(texto: str | None) -> bool:
     return bool(_GARANTIA_RE.search(t) and _PRECIO_RE.search(t))
 
 
-async def _avanzar(ctx: Any, crm_conversation_id: str, etapa: str) -> None:
-    try:
-        r = await ctx.crm.post_stage(crm_conversation_id, etapa)
-        logger.info(
-            "ETAPA %s: %s (conv=%s, desde=%s)",
-            etapa,
-            r.get("status"),
-            crm_conversation_id,
-            (r.get("from") or {}).get("name"),
-        )
-    except Exception as exc:  # 404, red, CRM sin el endpoint: nada escapa
-        logger.warning(
-            "ETAPA %s: no pude mover la tarjeta (conv=%s): %s",
-            etapa,
-            crm_conversation_id,
-            exc,
-        )
-
-
-def avanzar_si_cotizo(
-    ctx: Any, *, crm_conversation_id: str, texto: str | None
+def avisar_cotizado(
+    ctx: Any,
+    *,
+    identity: str,
+    crm_conversation_id: str,
+    texto: str | None,
+    context: dict[str, Any] | None = None,
 ) -> asyncio.Task[Any] | None:
-    """Si lo enviado es una cotización, pide al CRM avanzar la tarjeta. En
-    segundo plano: jamás retrasa ni bloquea la respuesta."""
+    """Si lo enviado es una cotización, evento `cotizado` en segundo plano.
+    Jamás retrasa ni bloquea la respuesta (sale DESPUÉS del envío)."""
     try:
-        etapa = (getattr(ctx.settings, "cotizacion_stage", "") or "").strip()
-        if not etapa or not crm_conversation_id or not es_cotizacion(texto):
+        settings = ctx.settings
+        if not (getattr(settings, "eventos_webhook_url", "") or "").strip():
             return None
-        tarea = asyncio.create_task(_avanzar(ctx, crm_conversation_id, etapa))
-        _tareas.add(tarea)
-        tarea.add_done_callback(_tareas.discard)
-        return tarea
+        if not crm_conversation_id or not es_cotizacion(texto):
+            return None
+        contacto = (context or {}).get("contact") or {}
+        lead = (context or {}).get("lead") or {}
+        return _programar(
+            settings,
+            {
+                "evento": "cotizado",
+                "identidad": identity,
+                "crm_conversation_id": crm_conversation_id,
+                "crm_contact_id": contacto.get("id") or "",
+                # La etapa al empezar el turno; n8n la vuelve a leer antes de mover.
+                "etapa_al_cotizar": lead.get("stageName") or "",
+                "fecha": _ahora_iso(getattr(settings, "agent_timezone", "UTC")),
+            },
+        )
     except Exception:
-        logger.exception("ETAPA: no pude programar el avance — sigo")
+        logger.exception("EVENTO cotizado: no pude programar el envío — sigo")
         return None
 
 

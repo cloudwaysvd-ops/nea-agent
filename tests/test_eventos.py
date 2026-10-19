@@ -255,62 +255,68 @@ def test_es_cotizacion_reconoce_solo_el_formato_fijo():
     assert not eventos.es_cotizacion(None)
 
 
-def _stage_route(respx_mock, status=200, body=None):
-    return respx_mock.post(f"{CRM_URL_}/api/bot/stage").mock(
-        return_value=httpx.Response(status, json=body or {"status": "moved", "from": {"name": "Nuevo"}})
-    )
+def _cotizados(hook) -> list[dict]:
+    out = []
+    for c in hook.calls:
+        b = json.loads(c.request.content)
+        if b.get("evento") == "cotizado":
+            out.append(b)
+    return out
 
 
-CRM_URL_ = "http://crm.test"
-
-
-async def test_cotizacion_enviada_mueve_a_cotizado(respx_mock):
-    ctx = make_ctx(make_settings(cotizacion_stage="Cotizado"))
+async def test_cotizacion_enviada_emite_evento_cotizado(respx_mock):
+    ctx = _ctx_con_eventos()
     routes = mock_crm_basics(respx_mock)
-    stage = _stage_route(respx_mock)
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
     ctx.llm.replies = [LlmReply(content=COTIZACION)]
 
     await _post(ctx, wa_body(text="tengo un Logan"))
 
     assert routes["messages"].call_count == 1
-    assert stage.call_count == 1
-    body = json.loads(stage.calls[0].request.content)
-    assert body == {"conversationId": CRM_CONV_ID, "stage": "Cotizado", "mode": "forward"}
+    evs = _cotizados(hook)
+    assert len(evs) == 1
+    ev = evs[0]
+    assert ev["identidad"] == IDENTITY
+    assert ev["crm_conversation_id"] == CRM_CONV_ID
+    assert ev["crm_contact_id"] == "ct_1"
+    assert ev["etapa_al_cotizar"] == "Nuevo"
     urls = [str(c.request.url) for c in respx_mock.calls]
-    assert urls.index(f"{CRM_URL_}/api/bot/messages") < urls.index(f"{CRM_URL_}/api/bot/stage"), (
-        "primero sale la cotización, después se mueve la tarjeta"
+    assert urls.index("http://crm.test/api/bot/messages") < urls.index(HOOK_URL), (
+        "primero sale la cotización, después el evento"
     )
+    assert not any(u.endswith("/api/bot/stage") for u in urls), "Nea no mueve la tarjeta"
 
 
-async def test_respuesta_normal_no_mueve_la_tarjeta(respx_mock):
-    ctx = make_ctx(make_settings(cotizacion_stage="Cotizado"))
+async def test_respuesta_normal_no_emite_cotizado(respx_mock):
+    ctx = _ctx_con_eventos()
     mock_crm_basics(respx_mock)
-    stage = _stage_route(respx_mock)
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
     ctx.llm.replies = [LlmReply(content="¡Hola! ¿Qué carro tienes?")]
 
     await _post(ctx, wa_body(text="hola"))
 
-    assert stage.call_count == 0
+    assert _cotizados(hook) == []
 
 
-async def test_sin_cotizacion_stage_no_mueve_nada(respx_mock):
-    ctx = make_ctx()  # sin COTIZACION_STAGE: como la imagen oficial
-    mock_crm_basics(respx_mock)
-    stage = _stage_route(respx_mock)
+async def test_sin_url_no_emite_cotizado(respx_mock):
+    ctx = make_ctx()  # sin EVENTOS_WEBHOOK_URL: como la imagen oficial
+    routes = mock_crm_basics(respx_mock)
     ctx.llm.replies = [LlmReply(content=COTIZACION)]
 
     await _post(ctx, wa_body(text="tengo un Logan"))
 
-    assert stage.call_count == 0
+    assert routes["messages"].call_count == 1
+    assert not any("n8n" in str(c.request.url) for c in respx_mock.calls)
 
 
-async def test_crm_sin_endpoint_o_sin_etapa_no_rompe_el_turno(respx_mock):
-    ctx = make_ctx(make_settings(cotizacion_stage="Cotizado"))
+async def test_webhook_caido_no_afecta_la_cotizacion(respx_mock, monkeypatch):
+    monkeypatch.setattr(eventos, "ESPERA_BASE", 0.0)
+    ctx = _ctx_con_eventos()
     routes = mock_crm_basics(respx_mock)
-    stage = _stage_route(respx_mock, status=404, body={"code": "stage_not_found"})
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(502))
     ctx.llm.replies = [LlmReply(content=COTIZACION)]
 
     await _post(ctx, wa_body(text="tengo un Logan"))
 
     assert routes["messages"].call_count == 1, "la cotización salió igual"
-    assert stage.call_count == 1
+    assert hook.call_count == eventos.INTENTOS

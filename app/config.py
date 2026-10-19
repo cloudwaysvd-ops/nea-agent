@@ -240,9 +240,6 @@ class Settings(BaseSettings):
     # = apagado, igual que la imagen oficial. El token viaja en `X-Nea-Token`.
     eventos_webhook_url: str = ""
     eventos_webhook_token: str = ""
-    # Fork: etapa del Pipeline a la que pasa el lead cuando Nea envía una
-    # cotización (app/eventos.py · es_cotizacion). Vacía = apagado.
-    cotizacion_stage: str = ""
 
     # Desarrollo: loguear el JSON crudo de mensajes no-texto entrantes para
     # capturar los formatos reales de Meta (spec 002). Apagar al terminar.
