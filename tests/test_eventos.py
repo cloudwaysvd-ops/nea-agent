@@ -152,3 +152,81 @@ def test_payload_sin_contexto_lleva_lo_minimo():
     assert body["telefono"] == "573000000000"
     assert body["nombre"] == "" and body["crm_contact_id"] == ""
     assert body["fecha"].endswith("+00:00")
+
+
+# ---------------------------------------------------------------- codigo ---
+
+TEXTO_CON_CODIGO = "Hola, solicito asesoría en baterías (Ref. C7K2QX)"
+
+
+def _textos_al_llm(ctx) -> list[str]:
+    out = []
+    for call in ctx.llm.calls:
+        for m in call["messages"]:
+            if m.get("role") == "user":
+                c = m.get("content")
+                out.append(c if isinstance(c, str) else json.dumps(c, ensure_ascii=False))
+    return out
+
+
+async def test_codigo_va_al_webhook_y_no_al_llm(respx_mock):
+    ctx = _ctx_con_eventos()
+    mock_crm_basics(respx_mock)
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+    ctx.llm.replies = [LlmReply(content="¡Hola! ¿Qué carro tienes?")]
+
+    await _post(ctx, wa_body(text=TEXTO_CON_CODIGO, wamid="wamid.ref1"))
+
+    eventos_codigo = [
+        json.loads(c.request.content)
+        for c in hook.calls
+        if json.loads(c.request.content)["evento"] == "codigo"
+    ]
+    assert len(eventos_codigo) == 1
+    ev = eventos_codigo[0]
+    assert ev["codigo"] == "C7K2QX"
+    assert ev["texto"] == TEXTO_CON_CODIGO, "n8n recibe el texto tal cual"
+    assert ev["identidad"] == IDENTITY
+    assert ev["nombre"] == "Lead de Prueba"
+    assert ev["wamid"] == "wamid.ref1"
+    assert hook.calls[0].request.headers["x-nea-token"] == "tok-eventos"
+
+    textos = _textos_al_llm(ctx)
+    assert textos, "el turno sí llegó al LLM"
+    assert not any("C7K2QX" in t for t in textos), "el agente nunca ve el código"
+    assert any("solicito asesoría en baterías" in t for t in textos)
+    # La bandeja sí lo ve: el relay al CRM va crudo.
+    assert any("C7K2QX" in r.body.decode() for r in ctx.store.relays.values())
+
+
+async def test_codigo_se_captura_aunque_nea_este_en_modo_prueba(respx_mock):
+    ctx = _ctx_con_eventos(allowed_wa_ids="573999999999")  # el lead NO está en la lista
+    routes = mock_crm_basics(respx_mock)
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+
+    await _post(ctx, wa_body(text=TEXTO_CON_CODIGO))
+
+    assert routes["messages"].call_count == 0, "en modo prueba no le contesta"
+    assert hook.call_count == 1
+    assert json.loads(hook.calls[0].request.content)["codigo"] == "C7K2QX"
+
+
+async def test_mensaje_sin_codigo_no_manda_evento(respx_mock):
+    ctx = _ctx_con_eventos()
+    mock_crm_basics(respx_mock)
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+    ctx.llm.replies = [LlmReply(content="¡Hola!")]
+
+    await _post(ctx, wa_body(text="hola, necesito una batería"))
+
+    assert hook.call_count == 0
+
+
+def test_detectar_y_quitar_codigo():
+    assert eventos.detectar_codigo(TEXTO_CON_CODIGO) == "C7K2QX"
+    assert eventos.detectar_codigo("hola ref c7k2qx") == "C7K2QX"
+    assert eventos.detectar_codigo("Ref: AB12CD") is None  # 1 no está en el alfabeto
+    assert eventos.detectar_codigo("Ref. C7K2QXZ") is None  # 7 caracteres
+    assert eventos.detectar_codigo(None) is None
+    assert eventos.quitar_codigo(TEXTO_CON_CODIGO) == "Hola, solicito asesoría en baterías"
+    assert eventos.quitar_codigo("(Ref. C7K2QX)") == "(Ref. C7K2QX)"  # no deja el texto vacío

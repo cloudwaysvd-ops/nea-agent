@@ -1,6 +1,12 @@
 """Eventos salientes hacia un orquestador propio (n8n, Make…). Fork, no upstream.
 
-Hoy hay uno: `handoff`. Cuando Nea le pasa una conversación a un humano, el
+Dos eventos:
+
+- `codigo`: el primer mensaje trae el código de la landing, «(Ref. C7K2QX)», que
+  une el clic de Google Ads (gclid) con este teléfono. Nea lo manda al
+  orquestador y lo QUITA del texto antes del LLM: el agente nunca lo ve, así
+  que no depende del prompt. La bandeja sí lo ve (el relay va crudo).
+- `handoff`: cuando Nea le pasa una conversación a un humano, el
 CRM solo pausa la IA y lo pinta en la bandeja; nadie se entera si no la tiene
 abierta, y el motivo completo del agente («FUERA DE CATALOGO: Suzuki Ertiga…»)
 se reduce a una de cinco categorías. Este evento lleva ese motivo, tal cual, a
@@ -18,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -34,6 +41,25 @@ ESPERA_BASE = 1.0
 MAX_MOTIVO = 1000
 
 _tareas: set[asyncio.Task[Any]] = set()
+
+# El código de la landing: 6 caracteres sin I, O, 0 ni 1. Misma regla que
+# `core.vincular_codigo` en la Postgres de n8n, que es quien decide de verdad.
+_CODIGO = r"ref\.?\s*:?\s*([A-HJ-NP-Z2-9]{6})\b"
+CODIGO_RE = re.compile(_CODIGO, re.IGNORECASE)
+# Lo que se quita del texto: el código con sus paréntesis y el espacio previo.
+_QUITAR_RE = re.compile(r"\s*\(?\s*" + _CODIGO + r"\s*\)?", re.IGNORECASE)
+
+
+def detectar_codigo(texto: str | None) -> str | None:
+    """El código en mayúsculas, o None si el texto no trae uno."""
+    m = CODIGO_RE.search(texto or "")
+    return m.group(1).upper() if m else None
+
+
+def quitar_codigo(texto: str) -> str:
+    """El texto sin «(Ref. XXXXXX)». Si no queda nada, el original."""
+    limpio = _QUITAR_RE.sub("", texto).strip()
+    return limpio or texto
 
 
 def _ahora_iso(zona: str) -> str:
@@ -85,9 +111,10 @@ async def enviar(settings: Any, payload: dict[str, Any]) -> bool:
                 resp = await client.post(url, json=payload, headers=headers)
                 if 200 <= resp.status_code < 300:
                     logger.info(
-                        "EVENTO %s entregado (conv=%s)",
+                        "EVENTO %s entregado (conv=%s codigo=%s)",
                         evento,
-                        payload.get("crm_conversation_id"),
+                        payload.get("crm_conversation_id", "-"),
+                        payload.get("codigo", "-"),
                     )
                     return True
                 logger.warning(
@@ -116,6 +143,45 @@ async def enviar(settings: Any, payload: dict[str, Any]) -> bool:
     return False
 
 
+def _programar(settings: Any, payload: dict[str, Any]) -> asyncio.Task[Any] | None:
+    tarea = asyncio.create_task(enviar(settings, payload))
+    _tareas.add(tarea)
+    tarea.add_done_callback(_tareas.discard)
+    return tarea
+
+
+def avisar_codigo(
+    settings: Any,
+    *,
+    identity: str,
+    texto: str,
+    codigo: str,
+    nombre: str | None = None,
+    wamid: str | None = None,
+) -> asyncio.Task[Any] | None:
+    """Evento `codigo` en segundo plano. Nunca bloquea ni lanza."""
+    try:
+        if not (getattr(settings, "eventos_webhook_url", "") or "").strip():
+            return None
+        return _programar(
+            settings,
+            {
+                "evento": "codigo",
+                "codigo": codigo,
+                # El texto completo viaja: n8n lo pasa tal cual a
+                # core.vincular_codigo, que tiene la última palabra.
+                "texto": (texto or "")[:MAX_MOTIVO],
+                "identidad": identity,
+                "nombre": nombre or "",
+                "wamid": wamid or "",
+                "fecha": _ahora_iso(getattr(settings, "agent_timezone", "UTC")),
+            },
+        )
+    except Exception:
+        logger.exception("EVENTO codigo: no pude programar el envío — sigo")
+        return None
+
+
 def avisar_handoff(
     ctx: Any,
     *,
@@ -136,10 +202,7 @@ def avisar_handoff(
             context=context,
             zona=getattr(settings, "agent_timezone", "UTC"),
         )
-        tarea = asyncio.create_task(enviar(settings, payload))
-        _tareas.add(tarea)
-        tarea.add_done_callback(_tareas.discard)
-        return tarea
+        return _programar(settings, payload)
     except Exception:
         logger.exception("EVENTO handoff: no pude programar el aviso — sigo")
         return None

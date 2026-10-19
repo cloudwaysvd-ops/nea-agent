@@ -27,6 +27,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from app.config import canonical_identity
+from app.eventos import avisar_codigo, detectar_codigo, quitar_codigo
 from app.http_limits import limited_body
 from app.state import AppContext, InboundMessage
 
@@ -306,6 +307,20 @@ async def _process(ctx: AppContext, body: bytes, signature: str | None) -> None:
             if not fresh:
                 logger.info("dedup: %s ya procesado — ignorado", msg.wa_message_id)
                 continue
+        # Fork: el código de la landing va al orquestador y sale del texto
+        # ANTES del coalesce: el agente nunca lo ve. Va antes de la allowlist
+        # (que vive en el turno): se captura aunque Nea esté en modo prueba.
+        codigo = detectar_codigo(msg.text)
+        if codigo and msg.text:
+            avisar_codigo(
+                ctx.settings,
+                identity=msg.identity,
+                texto=msg.text,
+                codigo=codigo,
+                nombre=msg.profile_name,
+                wamid=msg.wa_message_id,
+            )
+            msg.text = quitar_codigo(msg.text)
         if ctx.coalescer is None:
             logger.error("coalescer no inicializado — mensaje descartado")
             continue
