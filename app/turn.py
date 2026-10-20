@@ -20,7 +20,7 @@ from app import media
 from app.agenda import agenda_vigente
 from app.config import canonical_identity
 from app.crm import CrmConflict, CrmError, CrmUnreachable
-from app.eventos import avisar_cotizado, avisar_handoff
+from app.eventos import avisar_etapa, avisar_handoff
 from app.formato import a_whatsapp
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.llm import LlmExhausted
@@ -728,14 +728,20 @@ async def run_turn(
         sent = await _send(ctx, conv.id, str(crm_conv_id), final_text)
         if sent:
             await ctx.store.add_message(conv.id, "assistant", final_text)
-            # Fork: cotización enviada → evento `cotizado` (n8n mueve la tarjeta).
-            avisar_cotizado(
-                ctx,
-                identity=identity,
-                crm_conversation_id=str(crm_conv_id),
-                texto=final_text,
-                context=context,
-            )
+
+    # Fork: un evento de etapa por turno (n8n mueve la tarjeta, solo adelante):
+    # `cotizado` si salió una cotización; si no, `respondio` si el cliente le
+    # respondió a Diana y sigue en Nuevo. `recientes` se leyó antes de esta
+    # respuesta: un mensaje de Diana ahí es anterior al del cliente.
+    avisar_etapa(
+        ctx,
+        identity=identity,
+        crm_conversation_id=str(crm_conv_id),
+        texto_enviado=final_text,
+        enviado=sent,
+        historial=recientes,
+        context=context,
+    )
 
     # El handoff se ejecuta DESPUÉS de la despedida (si no, el CRM la rechaza
     # con 409 ai_paused).

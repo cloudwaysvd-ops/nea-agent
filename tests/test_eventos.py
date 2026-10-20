@@ -17,6 +17,7 @@ from app.main import create_app
 from tests.conftest import (
     CRM_CONV_ID,
     IDENTITY,
+    crm_context,
     make_ctx,
     make_settings,
     mock_crm_basics,
@@ -320,3 +321,112 @@ async def test_webhook_caido_no_afecta_la_cotizacion(respx_mock, monkeypatch):
 
     assert routes["messages"].call_count == 1, "la cotización salió igual"
     assert hook.call_count == eventos.INTENTOS
+
+
+# ------------------------------------------------------------- respondio ---
+
+
+def _eventos(hook, nombre: str) -> list[dict]:
+    return [
+        json.loads(c.request.content)
+        for c in hook.calls
+        if json.loads(c.request.content).get("evento") == nombre
+    ]
+
+
+async def _diana_ya_hablo(ctx) -> None:
+    """Simula que Diana ya saludó en esta conversación (historial de Nea)."""
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    await ctx.store.add_message(conv.id, "user", "hola")
+    await ctx.store.add_message(conv.id, "assistant", "¡Hola! Soy Diana. ¿Qué carro tienes?")
+
+
+async def test_hola_suelto_no_es_respuesta(respx_mock):
+    ctx = _ctx_con_eventos()
+    mock_crm_basics(respx_mock)
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+    ctx.llm.replies = [LlmReply(content="¡Hola! Soy Diana. ¿Qué carro tienes?")]
+
+    await _post(ctx, wa_body(text="hola"))
+
+    assert _eventos(hook, "respondio") == [], "el primer mensaje no es respuesta"
+
+
+async def test_responderle_a_diana_en_nuevo_emite_respondio(respx_mock):
+    ctx = _ctx_con_eventos()
+    mock_crm_basics(respx_mock)  # lead en «Nuevo»
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+    await _diana_ya_hablo(ctx)
+    ctx.llm.replies = [LlmReply(content="¿Es Logan normal o Logan con aire?")]
+
+    await _post(ctx, wa_body(text="tengo un Logan", wamid="wamid.r2"))
+
+    evs = _eventos(hook, "respondio")
+    assert len(evs) == 1
+    assert evs[0]["identidad"] == IDENTITY
+    assert evs[0]["crm_conversation_id"] == CRM_CONV_ID
+    assert evs[0]["etapa_al_responder"] == "Nuevo"
+    assert _eventos(hook, "cotizado") == []
+
+
+async def test_fuera_de_nuevo_no_emite_respondio(respx_mock):
+    ctx = _ctx_con_eventos()
+    mock_crm_basics(respx_mock)
+    respx_mock.get("http://crm.test/api/bot/context").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                **crm_context(),
+                "lead": {"id": "ld_1", "stageName": "En conversación"},
+            },
+        )
+    )
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+    await _diana_ya_hablo(ctx)
+    ctx.llm.replies = [LlmReply(content="¿Es Logan normal o Logan con aire?")]
+
+    await _post(ctx, wa_body(text="tengo un Logan", wamid="wamid.r3"))
+
+    assert _eventos(hook, "respondio") == []
+
+
+async def test_respuesta_con_cotizacion_manda_solo_cotizado(respx_mock):
+    ctx = _ctx_con_eventos()
+    mock_crm_basics(respx_mock)
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+    await _diana_ya_hablo(ctx)
+    ctx.llm.replies = [LlmReply(content=COTIZACION)]
+
+    await _post(ctx, wa_body(text="tengo un Logan", wamid="wamid.r4"))
+
+    assert len(_eventos(hook, "cotizado")) == 1
+    assert _eventos(hook, "respondio") == [], "un solo evento por turno"
+
+
+async def test_reset_no_cuenta_como_respuesta(respx_mock):
+    ctx = _ctx_con_eventos(tester_wa_ids=IDENTITY)
+    mock_crm_basics(respx_mock)
+    respx_mock.post("http://crm.test/api/bot/reset").mock(return_value=httpx.Response(200, json={"ok": True}))
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+    await _diana_ya_hablo(ctx)
+
+    await _post(ctx, wa_body(text="/reset", wamid="wamid.r5"))
+
+    assert _eventos(hook, "respondio") == []
+    conv = await ctx.store.get_or_create_conversation(IDENTITY)
+    historial = await ctx.store.recent_messages(conv.id, 10)
+    assert not any(m.role == "assistant" for m in historial), (
+        "el reset borra el historial: el conteo empieza de cero"
+    )
+
+
+def test_respuesta_en_etapa_inicial_sin_tildes_ni_mayusculas():
+    class M:
+        def __init__(self, role):
+            self.role = role
+
+    ctx_nuevo = {"lead": {"stageName": " nuevo "}}
+    assert eventos.es_respuesta_en_etapa_inicial([M("user"), M("assistant")], ctx_nuevo)
+    assert not eventos.es_respuesta_en_etapa_inicial([M("user")], ctx_nuevo)
+    assert not eventos.es_respuesta_en_etapa_inicial([M("assistant")], {"lead": {"stageName": "Interesado"}})
+    assert not eventos.es_respuesta_en_etapa_inicial([M("assistant")], None)

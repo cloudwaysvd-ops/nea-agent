@@ -6,6 +6,9 @@ Dos eventos:
   une el clic de Google Ads (gclid) con este teléfono. Nea lo manda al
   orquestador y lo QUITA del texto antes del LLM: el agente nunca lo ve, así
   que no depende del prompt. La bandeja sí lo ve (el relay va crudo).
+- `respondio`: el cliente le RESPONDIÓ a Diana (ya hay una respuesta de ella en
+  el historial antes de este mensaje) y la tarjeta sigue en «Nuevo». Un «hola»
+  suelto no cuenta. El orquestador la pasa a «En conversación».
 - `cotizado`: Nea ENVIÓ una cotización con el formato fijo del perfil
   («⭐ Garantía N meses» y «💰 $precio»). El orquestador mueve la tarjeta a
   «Cotizado», solo hacia adelante. Lo decide el código, no el LLM.
@@ -63,6 +66,77 @@ _PRECIO_RE = re.compile(r"💰\s*\$\s*\d")
 def es_cotizacion(texto: str | None) -> bool:
     t = texto or ""
     return bool(_GARANTIA_RE.search(t) and _PRECIO_RE.search(t))
+
+
+# La etapa de la que sale `respondio`. Nea solo filtra para no llamar al
+# orquestador en cada mensaje: quien decide de verdad (y solo hacia adelante)
+# es el orquestador, con las etapas reales del CRM.
+ETAPA_INICIAL = "Nuevo"
+
+
+def _norm(texto: str | None) -> str:
+    import unicodedata
+
+    t = unicodedata.normalize("NFD", texto or "")
+    return "".join(c for c in t if unicodedata.category(c) != "Mn").strip().lower()
+
+
+def es_respuesta_en_etapa_inicial(
+    historial: list[Any], context: dict[str, Any] | None
+) -> bool:
+    """¿El cliente le está respondiendo a Diana y su tarjeta sigue en Nuevo?
+
+    `historial` es lo que Nea guarda de la conversación (sin el `/reset`, que
+    además lo borra): si ya hay un mensaje de Diana, este turno es respuesta."""
+    lead = (context or {}).get("lead") or {}
+    if _norm(lead.get("stageName")) != _norm(ETAPA_INICIAL):
+        return False
+    return any(getattr(m, "role", None) == "assistant" for m in historial)
+
+
+def avisar_etapa(
+    ctx: Any,
+    *,
+    identity: str,
+    crm_conversation_id: str,
+    texto_enviado: str | None,
+    enviado: bool,
+    historial: list[Any],
+    context: dict[str, Any] | None = None,
+) -> asyncio.Task[Any] | None:
+    """Un solo evento de etapa por turno: `cotizado` si Diana envió una
+    cotización; si no, `respondio` si el cliente le respondió y sigue en Nuevo.
+    Uno solo para que dos eventos del mismo turno no compitan en el
+    orquestador (con solo-hacia-adelante, cotizar salta Nuevo → Interesado)."""
+    try:
+        if enviado and es_cotizacion(texto_enviado):
+            return avisar_cotizado(
+                ctx,
+                identity=identity,
+                crm_conversation_id=crm_conversation_id,
+                texto=texto_enviado,
+                context=context,
+            )
+        settings = ctx.settings
+        if not (getattr(settings, "eventos_webhook_url", "") or "").strip():
+            return None
+        if not crm_conversation_id or not es_respuesta_en_etapa_inicial(historial, context):
+            return None
+        contacto = (context or {}).get("contact") or {}
+        return _programar(
+            settings,
+            {
+                "evento": "respondio",
+                "identidad": identity,
+                "crm_conversation_id": crm_conversation_id,
+                "crm_contact_id": contacto.get("id") or "",
+                "etapa_al_responder": ((context or {}).get("lead") or {}).get("stageName") or "",
+                "fecha": _ahora_iso(getattr(settings, "agent_timezone", "UTC")),
+            },
+        )
+    except Exception:
+        logger.exception("EVENTO de etapa: no pude programar el envío — sigo")
+        return None
 
 
 def avisar_cotizado(
