@@ -33,6 +33,7 @@ from app.stall import (
 )
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt
+from app.redes import limpiar_herramienta_filtrada, promete_aviso
 from app.state import AppContext, InboundMessage, utcnow
 from app.tools import ToolRuntime, tool_schemas
 
@@ -690,7 +691,12 @@ async def run_turn(
     # tiene, o escribió una nota para sí mismo. Se le pide UNA vez más; si
     # vuelve a salir mal, silencio + handoff error, igual que un LLM caído.
     previos = [m.content for m in recientes if m.role == "assistant"]
+    final_text, filtrada = limpiar_herramienta_filtrada(final_text)
+    if filtrada:
+        logger.warning("turno %s: el modelo escribió una herramienta como texto — la corto", identity)
     motivo = _respuesta_invalida(final_text, previos)
+    if motivo is None and filtrada and not (final_text or "").strip():
+        motivo = "era una llamada a herramienta escrita como texto, sin mensaje para el cliente"
     if motivo is not None:
         logger.warning("turno %s: la respuesta %s — pido otra", identity, motivo)
         messages.append({"role": "assistant", "content": final_text})
@@ -699,7 +705,12 @@ async def run_turn(
             final_text = await _tool_loop(ctx, messages, runtime)
         except LlmExhausted:
             final_text = None
-        if final_text is None or _respuesta_invalida(final_text, previos):
+        final_text, filtrada = limpiar_herramienta_filtrada(final_text)
+        if (
+            final_text is None
+            or _respuesta_invalida(final_text, previos)
+            or (filtrada and not final_text.strip())
+        ):
             logger.error("turno %s: la segunda respuesta tampoco sirve — silencio + handoff error", identity)
             await _safe_handoff(
                 ctx,
@@ -742,6 +753,19 @@ async def run_turn(
         historial=recientes,
         context=context,
     )
+
+    # Fork: red de seguridad. Si el mensaje le dijo al cliente «ya le avisé a
+    # un asesor» y el modelo no llamó handoff, se escala aquí: la promesa ya
+    # salió y nadie la iba a cumplir.
+    if sent and runtime.handoff_reason is None and promete_aviso(final_text):
+        logger.warning(
+            "turno %s: prometió avisar a un asesor sin escalar — escalo (red de seguridad)",
+            identity,
+        )
+        runtime.handoff_reason = (
+            "Diana le dijo al cliente que avisó a un asesor (red de seguridad). "
+            f"El cliente escribió: {user_text[:160]}"
+        )
 
     # El handoff se ejecuta DESPUÉS de la despedida (si no, el CRM la rechaza
     # con 409 ai_paused).
