@@ -494,6 +494,35 @@ async def test_reset_de_linea_de_pruebas_borra_memoria(respx_mock):
     assert routes["messages"].call_count == 1  # confirmación al tester
 
 
+async def test_reset_limpia_la_ficha_del_crm(respx_mock):
+    """Fork: el reset del CRM deja la ficha, y la ficha entra al prompt. Tras
+    el /reset el tester veía a Diana recordar el carro de la prueba anterior."""
+    settings = make_settings(tester_wa_ids=IDENTITY)
+    ctx = make_ctx(settings)
+    routes = mock_crm_basics(respx_mock)
+    contexto = crm_context()
+    contexto["contact"]["ficha"] = {
+        "sistemas": "Renault Twingo",
+        "dolor_principal": "Necesita batería para Renault Twingo",
+    }
+    routes["context"].mock(return_value=httpx.Response(200, json=contexto))
+    respx_mock.post(f"{CRM_URL}/api/bot/reset").mock(
+        return_value=httpx.Response(200, json={"ok": True})
+    )
+
+    app = create_app(ctx=ctx)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://bot.test") as c:
+        await c.post("/webhook", content=wa_body(text="/reset", wamid="wamid.rst4"))
+        await asyncio.sleep(0.3)
+    await ctx.crm.aclose()
+
+    assert routes["ficha"].call_count == 1
+    enviado = json.loads(routes["ficha"].calls[0].request.content)
+    assert enviado["ficha"] == {"sistemas": None, "dolor_principal": None}
+    assert len(ctx.llm.calls) == 0
+
+
 async def test_reset_sin_lista_de_testers_es_texto_normal(ctx, client, respx_mock):
     routes = mock_crm_basics(respx_mock)
     reset_route = respx_mock.post(f"{CRM_URL}/api/bot/reset").mock(

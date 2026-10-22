@@ -900,19 +900,29 @@ async def _olvidar_si_es_otra(
 
 async def _run_reset(ctx: AppContext, conv: Any, identity: str) -> None:
     """Reinicio de pruebas: CRM primero (ficha limpia + IA reactivada, para que
-    la confirmación no rebote con 409 ai_paused) y luego la memoria local."""
-    crm_conv_id = conv.crm_conversation_id
-    if not crm_conv_id:
-        try:
-            context = await _fetch_context(ctx, identity)
-        except CrmUnreachable:
-            context = None
-        crm_conv_id = ((context or {}).get("conversation") or {}).get("id")
+    la confirmación no rebote con 409 ai_paused) y luego la memoria local.
+
+    Fork: el reset del CRM 1.5.1 regresa la tarjeta a Nuevo pero deja la
+    ficha, y la ficha entra al prompt en cada turno: Diana «recordaba» el carro
+    de la prueba anterior. Se borra clave por clave (`null` la quita)."""
+    try:
+        context = await _fetch_context(ctx, identity)
+    except CrmUnreachable:
+        context = None
+    crm_conv_id = conv.crm_conversation_id or (
+        ((context or {}).get("conversation") or {}).get("id")
+    )
     if crm_conv_id:
         try:
             await ctx.crm.post_reset(str(crm_conv_id))
         except CrmError as exc:
             logger.warning("reset %s: el CRM no pudo reiniciar (%s) — sigo", identity, exc)
+        ficha = ((context or {}).get("contact") or {}).get("ficha") or {}
+        if ficha:
+            try:
+                await ctx.crm.put_ficha(str(crm_conv_id), {k: None for k in ficha})
+            except CrmError as exc:
+                logger.warning("reset %s: no pude limpiar la ficha (%s) — sigo", identity, exc)
     await ctx.store.reset_conversation(conv.id)
     logger.info("reset de pruebas ejecutado para %s", identity)
     if crm_conv_id:
