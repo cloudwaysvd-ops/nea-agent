@@ -241,6 +241,31 @@ class Settings(BaseSettings):
     eventos_webhook_url: str = ""
     eventos_webhook_token: str = ""
 
+    # Fork: los 3 toques de seguimiento después de una cotización
+    # (app/toques.py). Apagado = el empujón único de siempre. Los tiempos se
+    # cuentan desde el último mensaje del cliente; el 3 va antes de las 24 h
+    # porque después Meta ya no deja escribirle sin plantilla.
+    toques_activos: bool = False
+    toque_1_minutos: float = Field(default=20.0, gt=0)
+    toque_1_urgente_minutos: float = Field(default=10.0, gt=0)
+    toque_2_horas: float = Field(default=4.0, gt=0)
+    toque_3_horas: float = Field(default=23.0, gt=0, lt=24)
+    toque_1_texto: str = (
+        "¿te quedó alguna duda con los precios de la batería?\n"
+        "Si me dices con cuál marca vamos, coordino la instalación de una. "
+        "Va incluida en el precio."
+    )
+    toque_2_texto: str = (
+        "Hola, sigo pendiente de tu batería.\n"
+        "Atendemos 24 horas y el domicilio no te cuesta. Si quieres te dejo la "
+        "opción más económica y arrancamos por ahí. ¿Te la agendo hoy?"
+    )
+    toque_3_texto: str = (
+        "No te escribo más para no molestarte 🙌\n"
+        "Si todavía necesitas la batería, mándame un “sí” y la retomamos justo "
+        "donde quedamos, con los mismos precios."
+    )
+
     # Desarrollo: loguear el JSON crudo de mensajes no-texto entrantes para
     # capturar los formatos reales de Meta (spec 002). Apagar al terminar.
     capture_payloads: bool = False

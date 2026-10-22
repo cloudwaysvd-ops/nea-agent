@@ -16,7 +16,7 @@ from datetime import timedelta
 from typing import Any, AsyncIterator
 from zoneinfo import ZoneInfo
 
-from app import media
+from app import media, toques
 from app.agenda import agenda_vigente
 from app.config import canonical_identity
 from app.crm import CrmConflict, CrmError, CrmUnreachable
@@ -563,10 +563,11 @@ async def run_turn(
     # handle_flush sabe a qué conversación del CRM avisarle.
     turno.crm_conversation_id = str(crm_conv_id)
 
+    cliente_escribio_en = utcnow()
     await ctx.store.update_conversation(
         conv.id,
         crm_conversation_id=str(crm_conv_id),
-        last_inbound_at=utcnow(),
+        last_inbound_at=cliente_escribio_en,
         followup_due_at=None,  # el lead habló: se re-agenda al final del turno
     )
 
@@ -794,7 +795,22 @@ async def run_turn(
     else:
         if runtime.proposed:
             updates["phase"] = "agendando"
-        if sent and not conv.followup_sent and not settings.cloud_mode:
+        # Fork: con cotización de por medio, el seguimiento son los 3 toques
+        # de texto fijo (app/toques.py); sin ella, el empujón único de siempre.
+        toques_turno = (
+            toques.al_cerrar_turno(
+                settings,
+                conv,
+                texto_enviado=final_text,
+                texto_cliente=user_text,
+                cliente_escribio_en=cliente_escribio_en,
+            )
+            if sent and not settings.cloud_mode
+            else None
+        )
+        if toques_turno is not None:
+            updates.update(toques_turno)
+        elif sent and not conv.followup_sent and not settings.cloud_mode:
             updates["followup_due_at"] = utcnow() + timedelta(
                 hours=settings.followup_hours
             )

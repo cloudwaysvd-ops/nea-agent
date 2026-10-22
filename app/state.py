@@ -38,6 +38,11 @@ COLUMNAS_DE_CONVERSACION = frozenset(
         "last_inbound_at",
         "stalled_at",
         "stall_since_message_id",
+        # Fork: los 3 toques de seguimiento (app/toques.py).
+        "cotizada",
+        "urgente",
+        "toque",
+        "toques_desde",
     }
 )
 
@@ -70,6 +75,11 @@ class Conversation:
     # El candado cuenta solo los mensajes con id mayor a este: se mueve al
     # reabrir, para que el hilo viejo no vuelva a disparar el cierre.
     stall_since_message_id: int = 0
+    # Fork: los 3 toques de seguimiento (app/toques.py, migrations/009).
+    cotizada: bool = False
+    urgente: bool = False
+    toque: int = 0
+    toques_desde: datetime | None = None
 
 
 @dataclass
@@ -247,6 +257,13 @@ class Store(Protocol):
         """Marca followup_sent=True atómicamente. True si ESTA llamada lo ganó."""
         ...
 
+    async def claim_toque(
+        self, conversation_id: int, paso: int, siguiente: datetime | None
+    ) -> bool:
+        """Fork: pasa de `paso` a `paso + 1` y agenda el siguiente toque (o
+        ninguno) atómicamente, ANTES de enviar. True si ESTA llamada lo ganó."""
+        ...
+
     async def relay_stats(self) -> RelayStats: ...
     # ¿Sigue en la cola, sin entregar, el payload que trae alguno de estos
     # wamids? Es lo que separa «el CRM no conoce a este lead» de «el CRM
@@ -392,6 +409,10 @@ class MemoryStore(MemoryDispatchStore):
         conv.followup_due_at = None
         conv.followup_sent = False
         conv.stalled_at = None
+        conv.cotizada = False
+        conv.urgente = False
+        conv.toque = 0
+        conv.toques_desde = None
 
     async def forget_conversation(
         self, organization_id: str, wa_identity: str, crm_conversation_id: str
@@ -502,6 +523,16 @@ class MemoryStore(MemoryDispatchStore):
         if conv.followup_sent:
             return False
         conv.followup_sent = True
+        return True
+
+    async def claim_toque(
+        self, conversation_id: int, paso: int, siguiente: datetime | None
+    ) -> bool:
+        conv = self.conversations[conversation_id]
+        if conv.toque != paso or conv.followup_due_at is None:
+            return False
+        conv.toque = paso + 1
+        conv.followup_due_at = siguiente
         return True
 
     async def ping(self) -> None:

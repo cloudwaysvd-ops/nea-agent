@@ -41,6 +41,10 @@ def _conv_from_row(row: asyncpg.Record) -> Conversation:
         last_inbound_at=row["last_inbound_at"],
         stalled_at=row["stalled_at"],
         stall_since_message_id=row["stall_since_message_id"],
+        cotizada=row["cotizada"],
+        urgente=row["urgente"],
+        toque=row["toque"],
+        toques_desde=row["toques_desde"],
         organization_id=row["organization_id"],
         organization_slug=row["organization_slug"],
     )
@@ -303,6 +307,8 @@ class PgStore(PgDispatchStore):
                     SET phase = 'descubrimiento', greeted = FALSE,
                         media_notice_sent = FALSE, followup_due_at = NULL,
                         followup_sent = FALSE, stalled_at = NULL,
+                        cotizada = FALSE, urgente = FALSE, toque = 0,
+                        toques_desde = NULL,
                         updated_at = now()
                     WHERE id = $1
                     """,
@@ -501,6 +507,24 @@ class PgStore(PgDispatchStore):
             RETURNING id
             """,
             conversation_id,
+        )
+        return row is not None
+
+    async def claim_toque(
+        self, conversation_id: int, paso: int, siguiente: datetime | None
+    ) -> bool:
+        # Fork: igual que el empujón, se marca ANTES de enviar — a lo sumo un
+        # mensaje por toque, incluso con crash o con dos réplicas barriendo.
+        row = await self.pool.fetchrow(
+            """
+            UPDATE bot_conversation
+            SET toque = $2 + 1, followup_due_at = $3, updated_at = now()
+            WHERE id = $1 AND toque = $2 AND followup_due_at IS NOT NULL
+            RETURNING id
+            """,
+            conversation_id,
+            paso,
+            siguiente,
         )
         return row is not None
 

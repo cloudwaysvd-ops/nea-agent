@@ -13,6 +13,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
+from app import toques
 from app.crm import CrmConflict, CrmError
 from app.formato import a_whatsapp
 from app.llm import LlmExhausted
@@ -45,6 +46,10 @@ class FollowupWorker:
             return  # Cloud coordination is opt-in and durable in the CRM, never a second sender.
         now = now or utcnow()
         for conv in await self._ctx.store.due_followups(now):
+            # Fork: después de una cotización van los 3 toques (app/toques.py).
+            if toques.aplica(self._ctx.settings, conv):
+                await self._toque(conv)
+                continue
             # Claim atómico ANTES de enviar: jamás un segundo empujón.
             if not await self._ctx.store.claim_followup(conv.id):
                 continue
@@ -74,6 +79,36 @@ class FollowupWorker:
                     "followup de %s falló — queda consumido (a lo sumo uno)",
                     conv.wa_identity,
                 )
+
+    async def _toque(self, conv: Conversation) -> None:
+        """Fork: reclama el toque que toca (y agenda el siguiente) ANTES de
+        enviarlo, igual que el empujón: a lo sumo un mensaje por toque."""
+        # Se copian ANTES del claim: el Store puede devolver el mismo objeto
+        # vivo (MemoryStore), y el claim o un turno lo cambian por debajo.
+        paso = conv.toque
+        ultimo_inbound = conv.last_inbound_at
+        siguiente = toques.vence(
+            self._ctx.settings, conv.toques_desde, paso + 1, conv.urgente
+        )
+        if not await self._ctx.store.claim_toque(conv.id, paso, siguiente):
+            return
+        try:
+            ctx = ctx_de_organizacion(
+                self._ctx, conv.organization_id, conv.organization_slug
+            )
+            if ctx is None:
+                logger.error(
+                    "toque %d de %s: sin organización conocida — omitido",
+                    paso + 1,
+                    conv.wa_identity,
+                )
+                return
+            async with conversation_lock(self._ctx, conv.wa_identity):
+                await toques.enviar(ctx, replace(conv, toque=paso), ultimo_inbound)
+        except Exception:
+            logger.exception(
+                "toque %d de %s falló — queda consumido", paso + 1, conv.wa_identity
+            )
 
     async def _push(
         self,
