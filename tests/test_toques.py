@@ -108,6 +108,47 @@ async def test_carro_varado_adelanta_el_toque_1_a_10_minutos(respx_mock):
     assert conv.followup_due_at == conv.toques_desde + timedelta(minutes=10)
 
 
+OFERTA_VARADO = (
+    "Qué situación tan molesta, ya te entiendo. Tengo baterías disponibles para tu Spark GT.\n\n"
+    "Tienes dos caminos:\n"
+    "1. Visita técnica para revisar si la falla es la batería: $70.000 (y si no era la batería, queda en $60.000).\n"
+    "2. Te cotizo de una la batería nueva, con instalación a domicilio incluida.\n\n"
+    "¿Cuál prefieres?"
+)
+
+
+async def test_carro_varado_con_oferta_de_visita_arranca_los_toques_a_10_min(respx_mock):
+    ctx = _ctx()
+    mock_crm_basics(respx_mock)
+    ctx.llm.replies = [LlmReply(content=OFERTA_VARADO)]
+
+    await _post(ctx, wa_body(text="mi Spark GT no arranca, estoy en Suba"))
+    await ctx.crm.aclose()
+
+    conv = _conv(ctx)
+    assert conv.cotizada and conv.urgente
+    assert conv.followup_due_at == conv.toques_desde + timedelta(minutes=10)
+
+
+async def test_preguntar_por_la_visita_sin_estar_varado_no_arranca_los_toques(respx_mock):
+    ctx = _ctx()
+    mock_crm_basics(respx_mock)
+    ctx.llm.replies = [LlmReply(content="La visita técnica cuesta $70.000. ¿Qué carro tienes?")]
+
+    await _post(ctx, wa_body(text="hacen visita técnica?"))
+    await ctx.crm.aclose()
+
+    conv = _conv(ctx)
+    assert not conv.cotizada
+    assert conv.toques_desde is None
+
+
+def test_es_oferta_de_visita():
+    assert toques.es_oferta_de_visita(OFERTA_VARADO)
+    assert not toques.es_oferta_de_visita("¿Te mando la visita técnica?")
+    assert not toques.es_oferta_de_visita(None)
+
+
 async def test_sin_cotizacion_queda_el_empujon_unico_de_4_horas(respx_mock):
     ctx = _ctx()
     mock_crm_basics(respx_mock)

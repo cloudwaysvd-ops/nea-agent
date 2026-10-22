@@ -12,8 +12,10 @@ precios que ya se cotizaron); si la IA falla, sale el texto del dueño tal cual
 - toque 3 a las `TOQUE_3_HORAS` — antes de las 24 h, porque después Meta ya
   no deja escribirle sin plantilla.
 
-Si el cliente escribe, la cuenta vuelve a empezar desde su mensaje. Sin
-cotización todavía, el seguimiento es el empujón único de siempre
+También arrancan con el carro varado cuando Diana ofrece la visita técnica o
+cotizar de una (ahí todavía no hay precios de batería, pero es el cliente más
+caliente). Si el cliente escribe, la cuenta vuelve a empezar desde su mensaje.
+Sin nada de eso todavía, el seguimiento es el empujón único de siempre
 (app/followup.py). Lo programa el final del turno (`al_cerrar_turno`) y lo
 envía el mismo barrido del seguimiento (`enviar`).
 """
@@ -57,6 +59,16 @@ def es_urgencia(texto: str | None) -> bool:
     return bool(_URGENCIA_RE.search(_norm(texto)))
 
 
+# La respuesta al carro varado: visita técnica con su precio (y cotizar de una).
+_VISITA_RE = re.compile(r"visita tecnica")
+_PRECIO_RE = re.compile(r"\$\s*\d")
+
+
+def es_oferta_de_visita(texto: str | None) -> bool:
+    t = _norm(texto)
+    return bool(_VISITA_RE.search(t) and _PRECIO_RE.search(t))
+
+
 def vence(settings: Any, desde: datetime, paso: int, urgente: bool) -> datetime | None:
     """Cuándo sale el toque número `paso` (0 = el primero). None = ya no hay más."""
     if paso == 0:
@@ -76,7 +88,7 @@ def texto(settings: Any, paso: int) -> str:
 _ESPERA = ("unos minutos", "unas horas", "casi un día")
 
 INSTRUCCION = (
-    "El cliente lleva {espera} sin responder después de tu cotización. Escribe "
+    "El cliente lleva {espera} sin responder después de tu último mensaje. Escribe "
     "el SEGUIMIENTO {n} de 3: UN solo mensaje corto de WhatsApp.\n"
     "Guía del dueño:\n---\n{guia}\n---\n"
     "Reglas:\n"
@@ -87,7 +99,9 @@ INSTRUCCION = (
     "de la guía por lo siguiente que falta para cerrar el pedido.\n"
     "- Puedes nombrar el carro y la batería que cotizaste.\n"
     "- Precios, marcas y garantías: solo los que ya enviaste, copiados exactos. "
-    "Nada nuevo: ni precios, ni descuentos, ni promesas.\n"
+    "Nada nuevo: ni precios, ni descuentos, ni promesas. Si todavía no "
+    "cotizaste baterías (por ejemplo, ofreciste la visita técnica), no nombres "
+    "marcas ni precios de batería: ofrécele cotizarle de una o mandarle la visita.\n"
     "- No reenvíes la cotización completa ni hagas listas.\n"
     "- No digas que avisaste a un asesor.\n"
     "- Responde solo con el mensaje, sin comillas ni explicaciones."
@@ -164,10 +178,14 @@ def al_cerrar_turno(
     (entonces sigue el empujón único). Solo se llama si el turno SÍ envió."""
     if not settings.toques_activos:
         return None
-    cotizada = bool(conv.cotizada) or es_cotizacion(texto_enviado)
-    if not cotizada:
-        return None
     urgente = bool(conv.urgente) or es_urgencia(texto_cliente)
+    arrancan = (
+        bool(conv.cotizada)
+        or es_cotizacion(texto_enviado)
+        or (urgente and es_oferta_de_visita(texto_enviado))
+    )
+    if not arrancan:
+        return None
     return {
         "cotizada": True,
         "urgente": urgente,
