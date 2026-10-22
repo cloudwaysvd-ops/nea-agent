@@ -246,6 +246,9 @@ class Settings(BaseSettings):
     # cuentan desde el último mensaje del cliente; el 3 va antes de las 24 h
     # porque después Meta ya no deja escribirle sin plantilla.
     toques_activos: bool = False
+    # Con IA, cada toque lo redacta el modelo usando el texto del dueño como
+    # guía (y ese texto sale tal cual si el modelo falla). Sin IA, sale fijo.
+    toques_con_ia: bool = True
     toque_1_minutos: float = Field(default=20.0, gt=0)
     toque_1_urgente_minutos: float = Field(default=10.0, gt=0)
     toque_2_horas: float = Field(default=4.0, gt=0)

@@ -1,7 +1,10 @@
 """Fork: los 3 toques de seguimiento después de una cotización.
 
-Si Diana ya cotizó y el cliente se calla, salen hasta tres mensajes de texto
-FIJO (sin IA), contados desde el último mensaje del cliente:
+Si Diana ya cotizó y el cliente se calla, salen hasta tres mensajes, contados
+desde el último mensaje del cliente. Cada uno lo redacta la IA con el texto
+del dueño como guía, ajustado a la conversación (el carro, la batería y los
+precios que ya se cotizaron); si la IA falla, sale el texto del dueño tal cual
+(`TOQUES_CON_IA=false` = siempre fijo):
 
 - toque 1 a los `TOQUE_1_MINUTOS` (o `TOQUE_1_URGENTE_MINUTOS` si el carro
   está varado),
@@ -25,6 +28,8 @@ from typing import Any
 from app.crm import CrmConflict, CrmError
 from app.eventos import es_cotizacion
 from app.formato import a_whatsapp
+from app.llm import LlmExhausted
+from app.redes import limpiar_herramienta_filtrada, promete_aviso
 
 logger = logging.getLogger("nea.toques")
 
@@ -66,6 +71,85 @@ def vence(settings: Any, desde: datetime, paso: int, urgente: bool) -> datetime 
 
 def texto(settings: Any, paso: int) -> str:
     return (settings.toque_1_texto, settings.toque_2_texto, settings.toque_3_texto)[paso]
+
+
+_ESPERA = ("unos minutos", "unas horas", "casi un día")
+
+INSTRUCCION = (
+    "El cliente lleva {espera} sin responder después de tu cotización. Escribe "
+    "el SEGUIMIENTO {n} de 3: UN solo mensaje corto de WhatsApp.\n"
+    "Guía del dueño:\n---\n{guia}\n---\n"
+    "Reglas:\n"
+    "- Parte de la guía y cambia lo MENOS posible: conserva sus frases, su tono "
+    "y su largo. Habla como Bogotana (atendemos, te llevamos).\n"
+    "- Antes de escribir, mira lo que el cliente YA respondió (marca, zona, "
+    "dirección, forma de pago…). No se lo vuelvas a preguntar: cambia esa parte "
+    "de la guía por lo siguiente que falta para cerrar el pedido.\n"
+    "- Puedes nombrar el carro y la batería que cotizaste.\n"
+    "- Precios, marcas y garantías: solo los que ya enviaste, copiados exactos. "
+    "Nada nuevo: ni precios, ni descuentos, ni promesas.\n"
+    "- No reenvíes la cotización completa ni hagas listas.\n"
+    "- No digas que avisaste a un asesor.\n"
+    "- Responde solo con el mensaje, sin comillas ni explicaciones."
+)
+
+
+async def redactar(ctx: Any, conv: Any, context: dict[str, Any], paso: int) -> str:
+    """El texto del toque: el de la IA si sale bien; si no, el del dueño."""
+    guia = texto(ctx.settings, paso).strip()
+    if not getattr(ctx.settings, "toques_con_ia", True):
+        return guia
+    # Tarde, a propósito: app.turn importa este módulo.
+    from app.profile import resolve_profile
+    from app.prompt import build_system_prompt
+    from app.turn import _agent_tz
+
+    llm = ctx.llm
+    if ctx.settings.multi_org:
+        # Igual que el empujón: se piensa con la credencial del negocio, nunca
+        # con la del entorno. Sin ella, sale el texto del dueño.
+        config_ia = getattr(ctx.crm, "credenciales_llm", lambda: None)()
+        if not config_ia:
+            return guia
+        llm = ctx.registro.llm(
+            conv.organization_id, conv.organization_slug, config_ia, ctx.settings
+        )
+    try:
+        system = build_system_prompt(
+            profile=await resolve_profile(ctx),
+            context=context,
+            conv=conv,
+            offered=[],
+            tz=_agent_tz(ctx.settings),
+            recordatorios=bool(getattr(ctx.crm, "supports_agenda_v2", False)),
+        )
+        history = await ctx.store.recent_messages(conv.id, ctx.settings.history_window)
+        instruccion = INSTRUCCION.format(espera=_ESPERA[paso], n=paso + 1, guia=guia)
+        messages: list[dict[str, Any]] = (
+            [{"role": "system", "content": system}]
+            + [{"role": m.role, "content": m.content} for m in history]
+            + [{"role": "system", "content": instruccion}]
+        )
+        reply = await llm.complete(messages, tools=None)
+    except LlmExhausted as exc:
+        logger.warning("toque %d de %s: IA agotada (%s) — sale la guía", paso + 1, conv.wa_identity, exc)
+        return guia
+    except Exception:
+        logger.exception("toque %d de %s: no pude redactarlo — sale la guía", paso + 1, conv.wa_identity)
+        return guia
+    propio, filtrado = limpiar_herramienta_filtrada((reply.content or "").strip())
+    propio = (propio or "").strip().strip('"«»“”').strip()
+    if filtrado or not propio:
+        logger.warning("toque %d de %s: la IA no dejó texto limpio — sale la guía", paso + 1, conv.wa_identity)
+        return guia
+    if promete_aviso(propio) or es_cotizacion(propio):
+        logger.warning(
+            "toque %d de %s: la IA prometió un asesor o reenvió la cotización — sale la guía",
+            paso + 1,
+            conv.wa_identity,
+        )
+        return guia
+    return propio
 
 
 def al_cerrar_turno(
@@ -145,7 +229,7 @@ async def enviar(ctx: Any, conv: Any, ultimo_inbound: datetime | None) -> None:
         await ctx.store.update_conversation(conv.id, followup_due_at=None)
         logger.info("toque %d de %s: %s — se cortan los toques", paso + 1, identity, motivo)
         return
-    mensaje = a_whatsapp(texto(ctx.settings, paso).strip())
+    mensaje = a_whatsapp(await redactar(ctx, conv, context, paso))
     try:
         await ctx.crm.send_message(str(crm_conv_id), mensaje)
     except CrmConflict as exc:

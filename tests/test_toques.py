@@ -15,7 +15,7 @@ import httpx
 
 from app import toques
 from app.followup import FollowupWorker
-from app.llm import LlmReply
+from app.llm import LlmExhausted, LlmReply
 from app.main import create_app
 from app.state import utcnow
 from tests.conftest import (
@@ -173,8 +173,15 @@ def test_es_urgencia():
 # ------------------------------------------------------------ el barrido ---
 
 
+REDACTADOS = [
+    "¿Te quedó alguna duda con los precios de la MAC 42I para tu Logan? Si te sirve, coordino la instalación, va incluida.",
+    "Hola, sigo pendiente de tu batería para el Logan. Atendemos 24 horas y el domicilio no te cuesta. ¿Te la agendo hoy?",
+    "No te escribo más para no molestarte 🙌 Si todavía necesitas la batería, mándame un “sí” y seguimos con los mismos precios.",
+]
+
+
 async def test_los_tres_toques_salen_en_orden_y_nunca_un_cuarto(respx_mock):
-    ctx = _ctx()
+    ctx = _ctx(toques_con_ia=False)
     conv, desde = await _cotizada(ctx, hace_minutos=21)
     respx_mock.get(f"{CRM_URL}/api/bot/context").mock(
         return_value=httpx.Response(200, json=crm_context())
@@ -285,3 +292,78 @@ async def test_reset_borra_el_estado_de_los_toques():
         0,
         None,
     )
+
+
+# ---------------------------------------------------------------- con IA ---
+
+
+def _crm(respx_mock):
+    respx_mock.get(f"{CRM_URL}/api/bot/context").mock(
+        return_value=httpx.Response(200, json=crm_context())
+    )
+    return respx_mock.post(f"{CRM_URL}/api/bot/messages").mock(
+        return_value=httpx.Response(200, json={"messageId": "m1"})
+    )
+
+
+async def test_con_ia_cada_toque_lo_redacta_el_modelo_con_la_guia(respx_mock):
+    ctx = _ctx()
+    ctx.llm.replies = [LlmReply(content=t) for t in REDACTADOS]
+    conv, desde = await _cotizada(ctx, hace_minutos=21)
+    messages = _crm(respx_mock)
+    worker = FollowupWorker(ctx)
+
+    await worker.tick()
+    await worker.tick(now=desde + timedelta(hours=4, minutes=1))
+    await worker.tick(now=desde + timedelta(hours=23, minutes=1))
+
+    assert _enviados(messages) == REDACTADOS
+    for paso, llamada in enumerate(ctx.llm.calls):
+        assert llamada["tools"] is None
+        ultima = llamada["messages"][-1]
+        assert ultima["role"] == "system"
+        assert f"SEGUIMIENTO {paso + 1} de 3" in ultima["content"]
+        assert toques.texto(ctx.settings, paso) in ultima["content"], "la guía va al modelo"
+        # El modelo ve la conversación: la cotización que mandó Diana.
+        assert any(m["content"] == COTIZACION for m in llamada["messages"])
+    await ctx.crm.aclose()
+
+
+async def test_ia_caida_sale_el_texto_del_dueno(respx_mock):
+    ctx = _ctx()
+    ctx.llm.raise_exc = LlmExhausted("sin saldo")
+    await _cotizada(ctx, hace_minutos=21)
+    messages = _crm(respx_mock)
+    await FollowupWorker(ctx).tick()
+    assert _enviados(messages) == [ctx.settings.toque_1_texto]
+    await ctx.crm.aclose()
+
+
+async def test_si_la_ia_promete_un_asesor_sale_el_texto_del_dueno(respx_mock):
+    ctx = _ctx()
+    ctx.llm.replies = [LlmReply(content="Ya le avisé a un asesor para que te contacte 🙌")]
+    await _cotizada(ctx, hace_minutos=21)
+    messages = _crm(respx_mock)
+    await FollowupWorker(ctx).tick()
+    assert _enviados(messages) == [ctx.settings.toque_1_texto]
+    await ctx.crm.aclose()
+
+
+async def test_si_la_ia_reenvia_la_cotizacion_sale_el_texto_del_dueno(respx_mock):
+    ctx = _ctx()
+    ctx.llm.replies = [LlmReply(content=COTIZACION)]
+    await _cotizada(ctx, hace_minutos=21)
+    messages = _crm(respx_mock)
+    await FollowupWorker(ctx).tick()
+    assert _enviados(messages) == [ctx.settings.toque_1_texto]
+    await ctx.crm.aclose()
+
+
+async def test_la_ia_no_deja_comillas_alrededor(respx_mock):
+    ctx = _ctx()
+    ctx.llm.replies = [LlmReply(content=f'"{REDACTADOS[0]}"')]
+    await _cotizada(ctx, hace_minutos=21)
+    messages = _crm(respx_mock)
+    await FollowupWorker(ctx).tick()
+    assert _enviados(messages) == [REDACTADOS[0]]
+    await ctx.crm.aclose()
