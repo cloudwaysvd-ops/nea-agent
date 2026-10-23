@@ -16,7 +16,7 @@ from datetime import timedelta
 from typing import Any, AsyncIterator
 from zoneinfo import ZoneInfo
 
-from app import media, toques
+from app import media, saludo, toques
 from app.agenda import agenda_vigente
 from app.config import canonical_identity
 from app.crm import CrmConflict, CrmError, CrmUnreachable
@@ -668,7 +668,17 @@ async def run_turn(
     # --- LLM con tools ----------------------------------------------------
     runtime = ToolRuntime(ctx, conv, str(crm_conv_id), profile=profile)
     try:
-        final_text = await _tool_loop(ctx, messages, runtime)
+        if (
+            not conv.greeted
+            and profile.greeting
+            and not image_uris
+            and saludo.es_solo_saludo(user_text)
+        ):
+            # Fork: un «hola» suelto recibe el saludo completo del dueño, sin
+            # pasar por el modelo (app/saludo.py).
+            final_text = saludo.MARCA
+        else:
+            final_text = await _tool_loop(ctx, messages, runtime)
     except LlmExhausted as exc:
         logger.error(
             "turno %s: LLM agotó reintentos (%s) — silencio + handoff error",
@@ -734,12 +744,23 @@ async def run_turn(
     # historial es lo ya convertido para que el modelo no aprenda de vuelta
     # el formato que el lead ve roto (app/formato.py).
     sent = False
+    # Fork: en el primer contacto el saludo del dueño sale tal cual, en su
+    # propio mensaje y antes de la respuesta (app/saludo.py). Sin convertir:
+    # es texto del dueño, no Markdown del modelo.
+    saludo_enviado = False
+    if not conv.greeted and profile.greeting:
+        primero, *resto = saludo.mensajes(profile.greeting, final_text)
+        saludo_enviado = await _send(ctx, conv.id, str(crm_conv_id), primero)
+        if saludo_enviado:
+            await ctx.store.add_message(conv.id, "assistant", primero)
+        final_text = resto[0] if resto else None
     if final_text and final_text.strip():
         final_text = a_whatsapp(runtime.finalize_reply(final_text.strip()))
     if final_text and final_text.strip():
         sent = await _send(ctx, conv.id, str(crm_conv_id), final_text)
         if sent:
             await ctx.store.add_message(conv.id, "assistant", final_text)
+    sent = sent or saludo_enviado
 
     # Fork: un evento de etapa por turno (n8n mueve la tarjeta, solo adelante):
     # `cotizado` si salió una cotización; si no, `respondio` si el cliente le

@@ -134,6 +134,22 @@ def test_prompt_minimo_advierte_falta_de_conocimiento():
     assert "(sin entradas todavía)" in system
 
 
+def test_primer_contacto_avisa_que_el_saludo_lo_manda_el_sistema():
+    """Fork: el saludo lo manda el código (app/saludo.py); el modelo no saluda."""
+    saludo = "¡Hola! 👋 Te habla Diana ⭐ 4.9 con más de 700 reseñas. ¿Para qué carro?"
+    nuevo = Conversation(id=1, wa_identity="5215550001111", greeted=False)
+    system = build_system_prompt(
+        profile=BusinessProfile(greeting=saludo), context=None, conv=nuevo
+    )
+    assert f"el saludo del negocio: «{saludo}»" in system
+    assert "Tú NO saludas" in system and "SOLO_SALUDO" in system
+    # Ya saludado, la orden del primer contacto no aparece.
+    system = build_system_prompt(
+        profile=BusinessProfile(greeting=saludo), context=None, conv=_conv()
+    )
+    assert "PRIMER contacto" not in system
+
+
 @pytest.mark.parametrize("kb", [None, "  "])
 def test_has_knowledge_falso_con_kb_vacio(kb):
     assert not BusinessProfile(kb_text=kb).has_knowledge

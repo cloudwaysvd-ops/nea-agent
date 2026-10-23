@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import json
+from app import saludo
 from app.profile import BusinessProfile
 from app.state import Conversation, OfferedSlot
 
@@ -35,7 +36,7 @@ IDENTIDAD Y VOZ:
 - CONCISIÓN: acusa recibo en una frase y pregunta lo siguiente. NO des mini-clases ni sermones — explica a fondo SOLO si te lo piden. Nunca repitas la misma frase o estructura de un mensaje anterior: si ya lo dijiste, di algo nuevo o pregunta directo.
 
 CONVERSACIÓN:
-1) Primer mensaje: saluda transparente + un gancho de valor + UNA pregunta abierta. Nada de formulario. Si el perfil define un saludo sugerido, úsalo como base. Si sabes de qué anuncio vino la persona, menciónalo.
+1) Primer mensaje: saluda transparente + un gancho de valor + UNA pregunta abierta. Nada de formulario. Si el perfil define un saludo, lo envía el sistema (ver CONTEXTO ACTUAL). Si sabes de qué anuncio vino la persona, menciónalo.
 2) Descubre tejiendo, una pregunta a la vez, con reacción BREVE a cada respuesta. Guarda cada dato nuevo del lead con la herramienta update_ficha en cuanto lo sepas.
 3) Decide la salida según los criterios del negocio. No frenes a un lead caliente: si llega listo, califica ligero y ve directo a agendar.
 
@@ -365,7 +366,10 @@ def build_system_prompt(
     if headline:
         lines.append(f'- El lead llegó desde el anuncio: "{headline}".')
 
-    if not conv.greeted:
+    if not conv.greeted and profile.greeting:
+        # Fork: el saludo del dueño lo manda el código tal cual (app/saludo.py).
+        lines.append(saludo.instruccion(profile.greeting))
+    elif not conv.greeted:
         lines.append(
             "- Es el PRIMER contacto: saluda transparente, gancho + UNA pregunta."
             + (" Personaliza el saludo mencionando el anuncio." if headline else "")
