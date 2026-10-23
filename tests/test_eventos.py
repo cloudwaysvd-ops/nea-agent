@@ -430,3 +430,79 @@ def test_respuesta_en_etapa_inicial_sin_tildes_ni_mayusculas():
     assert not eventos.es_respuesta_en_etapa_inicial([M("user")], ctx_nuevo)
     assert not eventos.es_respuesta_en_etapa_inicial([M("assistant")], {"lead": {"stageName": "Interesado"}})
     assert not eventos.es_respuesta_en_etapa_inicial([M("assistant")], None)
+
+
+# --- en_espera: el cliente escribe mientras espera al asesor ----------------
+
+HANDOFF_AT = "2026-10-23T16:02:00.000Z"
+
+
+def _contexto_escalado(handoff_at=HANDOFF_AT, window_open=True):
+    contexto = crm_context(ai_enabled=False, window_open=window_open)
+    contexto["conversation"]["handoffAt"] = handoff_at
+    return contexto
+
+
+def _mock_escalado(respx_mock, **kwargs):
+    routes = mock_crm_basics(respx_mock)
+    routes["context"].mock(return_value=httpx.Response(200, json=_contexto_escalado(**kwargs)))
+    return routes
+
+
+async def test_cliente_en_espera_emite_un_evento_y_no_contesta(respx_mock):
+    eventos._espera_avisada.clear()
+    ctx = _ctx_con_eventos()
+    routes = _mock_escalado(respx_mock)
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+
+    await _post(ctx, wa_body(text="no me han escrito", wamid="wamid.e1"))
+
+    assert routes["messages"].call_count == 0, "el bot no escribe con la IA en pausa"
+    [evento] = _eventos(hook, "en_espera")
+    assert evento["crm_conversation_id"] == CRM_CONV_ID
+    assert evento["handoff_at"] == HANDOFF_AT
+    assert evento["identidad"] == IDENTITY
+    assert evento["texto"] == "no me han escrito"
+
+
+async def test_en_espera_sale_una_sola_vez_por_handoff(respx_mock):
+    eventos._espera_avisada.clear()
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+    _mock_escalado(respx_mock)
+
+    await _post(_ctx_con_eventos(), wa_body(text="hola?", wamid="wamid.e2"))
+    await _post(_ctx_con_eventos(), wa_body(text="tu puedes validar?", wamid="wamid.e3"))
+    assert len(_eventos(hook, "en_espera")) == 1
+
+    # Un handoff nuevo en la misma conversación vuelve a habilitar el aviso.
+    _mock_escalado(respx_mock, handoff_at="2026-10-24T09:00:00.000Z")
+    await _post(_ctx_con_eventos(), wa_body(text="otra vez yo", wamid="wamid.e4"))
+    assert len(_eventos(hook, "en_espera")) == 2
+
+
+async def test_pausa_manual_sin_handoff_no_emite_en_espera(respx_mock):
+    eventos._espera_avisada.clear()
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+    _mock_escalado(respx_mock, handoff_at=None)
+
+    await _post(_ctx_con_eventos(), wa_body(text="hola", wamid="wamid.e5"))
+    assert _eventos(hook, "en_espera") == []
+
+
+async def test_ventana_cerrada_no_emite_en_espera(respx_mock):
+    eventos._espera_avisada.clear()
+    hook = respx_mock.post(HOOK_URL).mock(return_value=httpx.Response(200))
+    _mock_escalado(respx_mock, window_open=False)
+
+    await _post(_ctx_con_eventos(), wa_body(text="hola", wamid="wamid.e6"))
+    assert _eventos(hook, "en_espera") == []
+
+
+async def test_sin_url_no_emite_en_espera(respx_mock):
+    eventos._espera_avisada.clear()
+    ctx = make_ctx(make_settings())
+    routes = _mock_escalado(respx_mock)
+
+    await _post(ctx, wa_body(text="hola", wamid="wamid.e7"))
+    assert routes["messages"].call_count == 0
+    assert not any("n8n.test" in str(c.request.url) for c in respx_mock.calls)

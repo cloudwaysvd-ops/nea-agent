@@ -12,6 +12,11 @@ Dos eventos:
 - `cotizado`: Nea ENVIÓ una cotización con el formato fijo del perfil
   («⭐ Garantía N meses» y «💰 $precio»). El orquestador mueve la tarjeta a
   «Cotizado», solo hacia adelante. Lo decide el código, no el LLM.
+- `en_espera`: el cliente escribió con la conversación ya escalada (IA en
+  pausa por handoff). Nea no puede contestar —el CRM rechaza al bot con
+  `ai_paused`—, así que el orquestador decide si le manda, desde la bandeja,
+  el «ya le avisé a un asesor». Uno por handoff: el orquestador además revisa
+  que ningún asesor haya escrito ya.
 - `handoff`: cuando Nea le pasa una conversación a un humano, el
 CRM solo pausa la IA y lo pinta en la bandeja; nadie se entera si no la tiene
 abierta, y el motivo completo del agente («FUERA DE CATALOGO: Suzuki Ertiga…»)
@@ -303,6 +308,52 @@ def avisar_codigo(
         )
     except Exception:
         logger.exception("EVENTO codigo: no pude programar el envío — sigo")
+        return None
+
+
+# Conversaciones a las que ya se les mandó `en_espera`, con el handoff que lo
+# disparó. En memoria a propósito: si Nea reinicia, el orquestador igual ve que
+# ya salió su mensaje en la bandeja y no lo repite.
+_espera_avisada: dict[str, str] = {}
+
+
+def avisar_en_espera(
+    ctx: Any,
+    *,
+    identity: str,
+    context: dict[str, Any] | None,
+    texto: str | None = None,
+) -> asyncio.Task[Any] | None:
+    """Evento `en_espera`: el cliente escribe mientras la conversación está
+    escalada. Solo con handoff (una pausa manual de la bandeja no cuenta), con
+    la ventana abierta y una sola vez por handoff. Nunca bloquea ni lanza."""
+    try:
+        settings = ctx.settings
+        if not (getattr(settings, "eventos_webhook_url", "") or "").strip():
+            return None
+        conversacion = (context or {}).get("conversation") or {}
+        conv_id = str(conversacion.get("id") or "")
+        handoff_at = str(conversacion.get("handoffAt") or "")
+        if not conv_id or not handoff_at or not conversacion.get("windowOpen", False):
+            return None
+        if _espera_avisada.get(conv_id) == handoff_at:
+            return None
+        _espera_avisada[conv_id] = handoff_at
+        contacto = (context or {}).get("contact") or {}
+        return _programar(
+            settings,
+            {
+                "evento": "en_espera",
+                "identidad": identity,
+                "crm_conversation_id": conv_id,
+                "crm_contact_id": contacto.get("id") or "",
+                "handoff_at": handoff_at,
+                "texto": (texto or "")[:MAX_MOTIVO],
+                "fecha": _ahora_iso(getattr(settings, "agent_timezone", "UTC")),
+            },
+        )
+    except Exception:
+        logger.exception("EVENTO en_espera: no pude programar el envío — sigo")
         return None
 
 

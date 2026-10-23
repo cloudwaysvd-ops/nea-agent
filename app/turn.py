@@ -20,7 +20,7 @@ from app import media, saludo, toques
 from app.agenda import agenda_vigente
 from app.config import canonical_identity
 from app.crm import CrmConflict, CrmError, CrmUnreachable
-from app.eventos import avisar_etapa, avisar_handoff
+from app.eventos import avisar_en_espera, avisar_etapa, avisar_handoff
 from app.formato import a_whatsapp
 from app.hostility import ALERT as HOSTILITY_ALERT, hostile_streak
 from app.llm import LlmExhausted
@@ -553,6 +553,14 @@ async def run_turn(
         return
     if not conversation_info.get("aiEnabled", False):
         logger.info("turno %s: aiEnabled=false (handoff activo) — silencio", identity)
+        # Fork: el cliente que espera al asesor recibe un «ya le avisé» desde
+        # la bandeja (lo manda el orquestador; el bot no puede escribir aquí).
+        avisar_en_espera(
+            ctx,
+            identity=identity,
+            context=context,
+            texto=" ".join((m.text or "") for m in inbound).strip(),
+        )
         return
     if not conversation_info.get("windowOpen", False):
         logger.info("turno %s: ventana de 24 h cerrada — silencio", identity)
