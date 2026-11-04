@@ -196,3 +196,14 @@ async def test_turno_con_dos_cotizaciones_contaminadas_escala_sin_enviar(ctx, cl
     await asyncio.sleep(0.3)
     assert routes["messages"].call_count == 0
     assert routes["handoff"].call_count == 1
+
+
+def test_ficha_de_camion_liviano_no_cubre_un_carro_sin_ficha():
+    kb = KB + (
+        "\n- Batería para camión liviano: **Willard Extrema Titanio 27-1000** (medida 27) — "
+        "garantía 12 meses — $540.000 · $500.000 entregando la usada\n"
+    )
+    carro = _cotizacion("SsangYong Rexton", ("Willard Extrema Titanio 27-1000", 12, "540.000", "500.000"))
+    camion = _cotizacion("camión liviano", ("Willard Extrema Titanio 27-1000", 12, "540.000", "500.000"))
+    assert cotizacion_ajena(carro, kb) is not None
+    assert cotizacion_ajena(camion, kb) is None

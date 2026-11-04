@@ -80,8 +80,10 @@ _OPCION = re.compile(
     r"\s*💰\s*\$([\d.]+)\s*·\s*\$([\d.]+)"
 )
 
-# Fichas que no son de un modelo: valen para cualquier carro que las pida.
-_GENERICAS = ("start-stop", "camión liviano", "camion liviano")
+# Ficha que no es de un modelo: vale para cualquier carro start-stop. La de
+# camión liviano no entra aquí: con ella pasaría cualquier caja 27 o 31H para
+# un carro sin ficha; exige que el mensaje diga «liviano».
+_GENERICAS = ("start-stop",)
 
 # Palabras del nombre de la ficha que no identifican al carro.
 _VACIAS = {"no", "a", "y", "de", "o", "con", "sin", "aspirado", "turbo", "hibrido",
