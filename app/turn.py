@@ -33,7 +33,7 @@ from app.stall import (
 )
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt
-from app.redes import limpiar_herramienta_filtrada, promete_aviso
+from app.redes import limpiar_herramienta_filtrada, promete_aviso, cotizacion_ajena
 from app.state import AppContext, InboundMessage, utcnow
 from app.tools import ToolRuntime, tool_schemas
 
@@ -714,6 +714,10 @@ async def run_turn(
     if filtrada:
         logger.warning("turno %s: el modelo escribió una herramienta como texto — la corto", identity)
     motivo = _respuesta_invalida(final_text, previos)
+    if motivo is None:
+        motivo = cotizacion_ajena(final_text, profile.kb_text)
+        if motivo is not None:
+            logger.warning("turno %s: cotización fuera de la ficha — %s", identity, motivo)
     if motivo is None and filtrada and not (final_text or "").strip():
         motivo = "era una llamada a herramienta escrita como texto, sin mensaje para el cliente"
     if motivo is not None:
@@ -728,6 +732,7 @@ async def run_turn(
         if (
             final_text is None
             or _respuesta_invalida(final_text, previos)
+            or cotizacion_ajena(final_text, profile.kb_text)
             or (filtrada and not final_text.strip())
         ):
             logger.error("turno %s: la segunda respuesta tampoco sirve — silencio + handoff error", identity)
