@@ -91,12 +91,14 @@ TOOL_SCHEMA: dict[str, Any] = {
 }
 
 INSTRUCCION_PROMPT = (
-    "CATÁLOGO DE FICHAS: las fichas de cada modelo (medida, referencias, garantía y "
-    "precios) NO están en el conocimiento: se consultan con la herramienta "
-    "buscar_ficha. Antes de dar medida, referencia o precio, llama buscar_ficha con "
-    "el carro del cliente y copia sus líneas tal cual. El Índice de modelos con "
-    "ficha sigue diciendo qué carros se cotizan; si buscar_ficha no trae ficha, no "
-    "cotices: ruta segura."
+    "CATÁLOGO DE FICHAS: las fichas de cada modelo (medida, referencias, garantía, "
+    "precios y su pregunta obligatoria o excepción) NO están en el conocimiento: se "
+    "consultan con la herramienta buscar_ficha. En cuanto el cliente nombre un carro "
+    "que esté en el Índice de modelos con ficha o en «Carros start-stop», llama "
+    "buscar_ficha con ese carro ANTES de responder —antes de cotizar, de preguntar la "
+    "versión y antes de escalar—: la ficha dice qué preguntar y qué versiones sí se "
+    "cotizan. Copia sus líneas tal cual. Si el carro no está en el Índice o "
+    "buscar_ficha no trae ficha, no cotices: ruta segura."
 )
 
 _SI = {"si", "sí", "x", "true", "1", "verdadero", "yes"}
