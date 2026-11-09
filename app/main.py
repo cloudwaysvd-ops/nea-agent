@@ -33,6 +33,7 @@ from app.multiorg import (
     LlmSinOrganizacion,
     RegistroDeOrganizaciones,
 )
+from app.catalogo import CatalogoProvider
 from app.profile import ProfileProvider
 from app.relay import RelayWorker
 from app.sender import SenderWorker
@@ -222,6 +223,16 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
                     )
                 ),
                 registro=registro,
+                catalogo=(
+                    CatalogoProvider(
+                        url=settings.catalogo_url,
+                        path=settings.catalogo_path,
+                        ttl=settings.catalogo_ttl_seconds,
+                    )
+                    if not settings.multi_org
+                    and (settings.catalogo_url or settings.catalogo_path)
+                    else None
+                ),
             )
         c: AppContext = app.state.ctx
         _wire_coalescer(c)

@@ -166,6 +166,16 @@ class Settings(BaseSettings):
 
     history_window: int = 10
 
+    # Fork: catálogo de fichas en una hoja (app/catalogo.py). CATALOGO_URL es
+    # el CSV publicado de Google Sheets; CATALOGO_PATH, un CSV local de
+    # respaldo. Los dos vacíos = como siempre: las fichas van en el
+    # conocimiento del CRM y no existe la herramienta buscar_ficha.
+    catalogo_url: str = Field(default="", validation_alias=AliasChoices("CATALOGO_URL"))
+    catalogo_path: str = Field(default="", validation_alias=AliasChoices("CATALOGO_PATH"))
+    catalogo_ttl_seconds: float = Field(
+        default=300.0, ge=0, validation_alias=AliasChoices("CATALOGO_TTL_SECONDS")
+    )
+
     # Cada cuántos segundos, como mucho, se le vuelve a preguntar al CRM si
     # agenda (la bandera AGENDA de Vocero). Antes se preguntaba solo al
     # arrancar: encenderla exigía reiniciar Nea. La pregunta la hace el primer

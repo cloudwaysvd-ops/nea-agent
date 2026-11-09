@@ -554,6 +554,9 @@ class AppContext:
     crm: Any  # CrmClient
     llm: Any  # OpenAiLlm o fake con .complete()
     profile: Any | None = None  # ProfileProvider; None en tests = perfil mínimo
+    # Fork: CatalogoProvider (app/catalogo.py). None = las fichas van en el
+    # conocimiento del CRM, como siempre, y no hay herramienta buscar_ficha.
+    catalogo: Any | None = None
     # Modo multi-organización: el registro de clientes por organización.
     # None fuera de ese modo — una Nea de un solo negocio no lo necesita, y
     # que sea None es lo que hace evidente en qué modo está corriendo.

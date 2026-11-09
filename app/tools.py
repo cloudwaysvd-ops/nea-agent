@@ -416,6 +416,8 @@ class ToolRuntime:
                 return await self._route_out()
             if name == "handoff":
                 return self._handoff(args)
+            if name == "buscar_ficha" and self._ctx.catalogo is not None:
+                return await self._buscar_ficha(args)
             logger.warning("tools: herramienta desconocida %r", name)
             return {"ok": False, "error": f"herramienta desconocida: {name}"}
         except CrmError as exc:
@@ -425,6 +427,21 @@ class ToolRuntime:
                 "error": "crm_error",
                 "detalle": "no pude completar la acción; continúa la conversación o haz handoff",
             }
+
+    async def _buscar_ficha(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Fork: la ficha del carro, desde la hoja del catálogo (app/catalogo.py)."""
+        consulta = str(args.get("modelo") or "").strip()
+        catalogo = await self._ctx.catalogo.get()
+        if catalogo is None:
+            logger.error("tools: buscar_ficha sin catálogo disponible")
+            return {
+                "ok": False,
+                "error": "catalogo_no_disponible",
+                "detalle": "no pude consultar el catálogo; no cotices de memoria: haz handoff",
+            }
+        resultado = catalogo.consultar(consulta)
+        logger.info("tools: buscar_ficha(%r) → %s", consulta, resultado["fichas"] or "sin ficha")
+        return resultado
 
     async def _update_ficha(self, args: dict[str, Any]) -> dict[str, Any]:
         # Tolera el drift del LLM: manda lo que haya, el CRM normaliza flojo.

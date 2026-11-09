@@ -34,6 +34,7 @@ from app.stall import (
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt
 from app.redes import limpiar_herramienta_filtrada, promete_aviso, cotizacion_ajena
+from app.catalogo import TOOL_SCHEMA as CATALOGO_TOOL
 from app.state import AppContext, InboundMessage, utcnow
 from app.tools import ToolRuntime, tool_schemas
 
@@ -626,6 +627,7 @@ async def run_turn(
         agenda=ctx.agenda_enabled,
         tz=_agent_tz(settings),
         recordatorios=bool(getattr(ctx.crm, "supports_agenda_v2", False)),
+        catalogo=ctx.catalogo is not None,
     )
     # Se traen más mensajes de los que ve el LLM: el candado de cierre cuenta
     # el hilo COMPLETO del lead, no solo la ventana de contexto.
@@ -714,8 +716,11 @@ async def run_turn(
     if filtrada:
         logger.warning("turno %s: el modelo escribió una herramienta como texto — la corto", identity)
     motivo = _respuesta_invalida(final_text, previos)
+    # Fork: con el catálogo en la hoja, la red de precios valida contra sus
+    # líneas (mismo texto que tenían en el conocimiento).
+    kb_precios = await _kb_para_precios(ctx, profile.kb_text)
     if motivo is None:
-        motivo = cotizacion_ajena(final_text, profile.kb_text)
+        motivo = cotizacion_ajena(final_text, kb_precios)
         if motivo is not None:
             logger.warning("turno %s: cotización fuera de la ficha — %s", identity, motivo)
     if motivo is None and filtrada and not (final_text or "").strip():
@@ -732,7 +737,7 @@ async def run_turn(
         if (
             final_text is None
             or _respuesta_invalida(final_text, previos)
-            or cotizacion_ajena(final_text, profile.kb_text)
+            or cotizacion_ajena(final_text, kb_precios)
             or (filtrada and not final_text.strip())
         ):
             logger.error("turno %s: la segunda respuesta tampoco sirve — silencio + handoff error", identity)
@@ -1094,6 +1099,36 @@ def _respuesta_invalida(texto: str | None, previos: list[str]) -> str | None:
     return None
 
 
+async def _kb_para_precios(ctx: AppContext, kb_text: str | None) -> str | None:
+    """Fork: el texto contra el que la red de precios valida las cotizaciones.
+
+    Sin catálogo en hoja, el conocimiento del CRM, como siempre. Con hoja, el
+    conocimiento más todas las líneas de la hoja: si el dueño todavía no quitó
+    las fichas del CRM, las dos fuentes valen (y deberían coincidir).
+    """
+    if ctx.catalogo is None:
+        return kb_text
+    try:
+        catalogo = await ctx.catalogo.get()
+    except Exception:  # la red nunca tumba un turno
+        logger.exception("catálogo: no pude leerlo para la red de precios")
+        catalogo = None
+    if catalogo is None:
+        return kb_text
+    return "\n".join(t for t in (kb_text, catalogo.texto_lineas()) if t)
+
+
+def _herramientas(ctx: AppContext) -> list[dict[str, Any]]:
+    schemas = tool_schemas(
+        ctx.agenda_enabled,
+        bool(getattr(ctx.crm, "supports_agenda_v2", False)),
+        bool(getattr(ctx.crm, "supports_coordination", False)),
+    )
+    if ctx.catalogo is not None:
+        schemas = [*schemas, CATALOGO_TOOL]  # copia: TOOL_SCHEMAS no se toca
+    return schemas
+
+
 async def _tool_loop(
     ctx: AppContext, messages: list[dict[str, Any]], runtime: ToolRuntime
 ) -> str | None:
@@ -1113,9 +1148,7 @@ async def _tool_loop(
     con el resultado de la herramienta, que es lo que siempre hizo bien.
     """
     for _ in range(MAX_TOOL_ROUNDS):
-        reply = await ctx.llm.complete(
-            messages, tools=tool_schemas(ctx.agenda_enabled, bool(getattr(ctx.crm, "supports_agenda_v2", False)), bool(getattr(ctx.crm, "supports_coordination", False)))
-        )
+        reply = await ctx.llm.complete(messages, tools=_herramientas(ctx))
         if not reply.tool_calls:
             return reply.content  # turno de puro texto
         # content vacío con tool_calls es normal (turno solo-herramientas)
