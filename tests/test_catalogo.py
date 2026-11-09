@@ -285,3 +285,22 @@ async def test_turno_rechaza_precio_que_no_esta_en_la_hoja(ctx, client, respx_mo
     await asyncio.sleep(0.3)
     assert routes["messages"].call_count == 0
     assert routes["handoff"].call_count == 1
+
+
+def test_la_cabecera_dice_el_carro_de_las_lineas(cat):
+    """Como en el conocimiento: «MODELO: carro start-stop», no el título de la ficha."""
+    ss = next(f for f in cat.fichas if f.nombre == "Baterías para carros start-stop")
+    assert ss.texto().startswith("## Baterías para carros start-stop\n\nMODELO: carro start-stop · MEDIDA: LN3 o LN4")
+    escape = next(f for f in cat.fichas if f.nombre == "Ford Escape")
+    assert "MODELO: Ford Escape · MARCA: Ford" in escape.texto()  # líneas con modelos distintos
+
+
+def test_medida_ficha_opcional_manda_en_la_cabecera():
+    hoja = HOJA.splitlines()[0] + ",medida_ficha\n" + (
+        "Nissan Versa,Nissan,versa,,,42,Mac Silver Plus 42-970,15,460.000,420.000,,42 (a veces 36)\n"
+        "Nissan Versa,,,,,36,Mac Silver Plus 36-800,15,440.000,400.000,,\n"
+    )
+    versa = desde_csv(hoja).fichas[0]
+    assert "MEDIDA: 42 (a veces 36)" in versa.texto()
+    sin = desde_csv(HOJA).fichas[0]
+    assert "MEDIDA: NS40" in sin.texto()  # vacía: se arma con las filas

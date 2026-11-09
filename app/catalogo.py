@@ -19,6 +19,8 @@ el orden no importa y las mayúsculas/tildes tampoco):
     precio              320000 (con o sin $ y puntos)
     precio_con_usada    280000
     no_se_cotiza        «sí» si esa batería no se ofrece (Diana escala)
+    medida_ficha        opcional: la medida como se resume en la cabecera
+                        («42 (a veces 36)»); vacía = se arma con las de las filas
 
 `se_escribe_tambien` y `nota` basta con ponerlos en una fila de la ficha; si
 van en varias, se juntan sin repetir.
@@ -59,6 +61,7 @@ COLUMNAS = (
     "precio",
     "precio_con_usada",
     "no_se_cotiza",
+    "medida_ficha",
 )
 
 TOOL_SCHEMA: dict[str, Any] = {
@@ -153,17 +156,27 @@ class Ficha:
     alias: list[str] = field(default_factory=list)
     notas: list[str] = field(default_factory=list)
     medidas_sueltas: list[str] = field(default_factory=list)  # filas sin referencia
+    medida_ficha: str = ""
     opciones: list[Opcion] = field(default_factory=list)
 
     def medidas(self) -> str:
+        if self.medida_ficha:
+            return self.medida_ficha
         vistas: list[str] = []
         for m in [o.medida for o in self.opciones] + self.medidas_sueltas:
             if m and m not in vistas:
                 vistas.append(m)
         return " · ".join(vistas)
 
+    def modelo(self) -> str:
+        """Lo que dice «MODELO:»: el carro de las líneas si todas dicen el mismo
+        («carro start-stop», «Ford Edge 2016 a 2020»); si no, el de la ficha.
+        Así la ficha se lee igual que en el conocimiento."""
+        modelos = {o.modelo for o in self.opciones}
+        return modelos.pop() if len(modelos) == 1 else self.nombre
+
     def texto(self) -> str:
-        cabecera = f"MODELO: {self.nombre}"
+        cabecera = f"MODELO: {self.modelo()}"
         if self.marca:
             cabecera += f" · MARCA: {self.marca}"
         if self.medidas():
@@ -358,6 +371,8 @@ def desde_csv(texto: str) -> Catalogo:
             ficha = fichas[_norm(nombre)] = Ficha(nombre=nombre)
         if d.get("marca") and not ficha.marca:
             ficha.marca = d["marca"]
+        if d.get("medida_ficha") and not ficha.medida_ficha:
+            ficha.medida_ficha = d["medida_ficha"]
         # Coma separa; la coma dentro de paréntesis no: «onix (aspirado, no turbo)».
         for a in re.split(r",(?![^()]*\))", d.get("se_escribe_tambien") or ""):
             a = a.strip()
