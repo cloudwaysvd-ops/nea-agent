@@ -109,3 +109,78 @@ async def test_con_el_carro_saludo_y_respuesta_en_dos_mensajes(respx_mock):
         respx_mock, "tengo un spark", "¿Tu Spark es normal o Spark GT?", "wamid.sal2"
     )
     assert enviados == [SIN_PREGUNTA, "¿Tu Spark es normal o Spark GT?"]
+
+
+# --- Fork: sin re-saludo (2026-11-10) ---------------------------------------
+# Respuestas reales de producción del 9 de noviembre, después del saludo.
+
+def test_quita_el_resaludo_de_produccion():
+    casos = {
+        "¡Hola Felipe! 👋 Te habla Diana de Bogotana de Baterías, la mejor calificada "
+        "de Bogotá ⭐ 4.9 con más de 700 reseñas en Google.\n\n¿Tu Mazda CX30 trae "
+        "i-stop (start-stop)?": "¿Tu Mazda CX30 trae i-stop (start-stop)?",
+        "¡Hola Miguel! 👋 Te habla Diana de Bogotana de Baterías.\n\nEl Hyundai Atos "
+        "no lo tengo en mi lista.": "El Hyundai Atos no lo tengo en mi lista.",
+        "¡Hola Felipe! 👋 Te habla Diana de Bogotana de Baterías ⭐ 4.9 con más de 700 "
+        "reseñas en Google. Claro, con gusto te asesoro.": "Claro, con gusto te asesoro.",
+        f"¡Hola Juan! 👋 {SALUDO[len('¡Hola! 👋 '):]}": "¿Para qué carro necesitas la batería?",
+        "¡Hola, Juan! ¿Te quedó alguna duda?": "¿Te quedó alguna duda?",
+        "¡Hola de nuevo! 👋 Sigo por aquí.": "Sigo por aquí.",
+        "Buenas tardes, Juan. Ya te cotizo.": "Ya te cotizo.",
+    }
+    for entrada, esperado in casos.items():
+        assert saludo.quitar_presentacion(entrada) == (esperado, True), entrada
+    assert saludo.quitar_presentacion(SIN_PREGUNTA) == ("", True)
+
+
+def test_no_toca_lo_que_no_es_saludo():
+    for texto in (
+        "Para tu Honda Civic te sirven estas 🔋",
+        "¡Perfecto! El Mazda CX-30 puede traer dos tipos de batería.",
+        "Holaaa",
+        "Diana te cotiza ya mismo.",
+        "",
+        None,
+    ):
+        assert saludo.quitar_presentacion(texto) == (texto, False), texto
+    # «Hola, sigo pendiente…» conserva el «sigo»: el nombre va con mayúscula.
+    assert saludo.quitar_presentacion("Hola, sigo pendiente.") == ("Sigo pendiente.", True)
+
+
+async def _dos_turnos(respx_mock, respuestas: list[str], llamadas: int) -> list[str]:
+    llm = FakeLLM([LlmReply(content=r) for r in respuestas])
+    ctx = make_ctx(llm=llm)
+    ctx.profile = PerfilFijo(BusinessProfile(agent_name="Diana", greeting=SALUDO))
+    routes = mock_crm_basics(respx_mock)
+    app = create_app(ctx=ctx)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://bot.test") as c:
+        await c.post("/webhook", content=wa_body(text="Hola, solicito asesoría en baterías", wamid="wamid.rs1"))
+        await asyncio.sleep(0.3)
+        await c.post("/webhook", content=wa_body(text="Hola, mazda cx 30", wamid="wamid.rs2"))
+        await asyncio.sleep(0.3)
+    await ctx.crm.aclose()
+    assert len(llm.calls) == llamadas
+    system = llm.calls[0]["messages"][0]["content"] if llm.calls and isinstance(llm.calls[0], dict) else ""
+    if system:
+        assert "Ya saludaste y te presentaste" in system
+    return [json.loads(call.request.content)["text"] for call in routes["messages"].calls]
+
+
+async def test_segundo_turno_sale_sin_resaludo(respx_mock):
+    enviados = await _dos_turnos(
+        respx_mock,
+        ["¡Hola Felipe! 👋 Te habla Diana de Bogotana de Baterías, la mejor calificada de "
+         "Bogotá ⭐ 4.9 con más de 700 reseñas en Google.\n\n¿Tu Mazda CX30 trae i-stop?"],
+        llamadas=1,
+    )
+    assert enviados == [SALUDO, "¿Tu Mazda CX30 trae i-stop?"]
+
+
+async def test_si_solo_resaluda_se_le_pide_otra(respx_mock):
+    enviados = await _dos_turnos(
+        respx_mock,
+        [SIN_PREGUNTA, "¿Tu Mazda CX30 trae i-stop?"],
+        llamadas=2,
+    )
+    assert enviados == [SALUDO, "¿Tu Mazda CX30 trae i-stop?"]

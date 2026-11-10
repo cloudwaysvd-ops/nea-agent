@@ -713,7 +713,15 @@ async def run_turn(
     final_text, filtrada = limpiar_herramienta_filtrada(final_text)
     if filtrada:
         logger.warning("turno %s: el modelo escribió una herramienta como texto — la corto", identity)
+    # La repetición se mira ANTES de quitar el saludo: un mensaje repetido
+    # entero se pide de nuevo, no se manda recortado.
     motivo = _respuesta_invalida(final_text, previos)
+    resaludo = False
+    if motivo is None:
+        final_text, resaludo = _sin_resaludo(conv, final_text, identity)
+        motivo = _respuesta_invalida(final_text, previos)
+        if motivo is None and resaludo and not (final_text or "").strip():
+            motivo = SOLO_RESALUDO
     if motivo is None:
         motivo = cotizacion_ajena(final_text, profile.kb_text)
         if motivo is not None:
@@ -729,8 +737,12 @@ async def run_turn(
         except LlmExhausted:
             final_text = None
         final_text, filtrada = limpiar_herramienta_filtrada(final_text)
+        repetida = _respuesta_invalida(final_text, previos)
+        final_text, resaludo = _sin_resaludo(conv, final_text, identity)
         if (
             final_text is None
+            or repetida
+            or (resaludo and not final_text.strip())
             or _respuesta_invalida(final_text, previos)
             or cotizacion_ajena(final_text, profile.kb_text)
             or (filtrada and not final_text.strip())
@@ -1066,6 +1078,23 @@ CORRIGE_RESPUESTA = (
     "WhatsApp que responde a su ÚLTIMO mensaje, en tu voz y sin repetir nada "
     "que ya le hayas escrito."
 )
+
+
+SOLO_RESALUDO = (
+    "solo volvía a saludar y a presentarte, y eso ya lo hiciste al principio: "
+    "contesta directo a lo que escribió el lead"
+)
+
+
+def _sin_resaludo(conv: Any, texto: str | None, identity: str) -> tuple[str | None, bool]:
+    """Fork: con la conversación ya saludada, la respuesta sale sin «¡Hola X! 👋
+    Te habla Diana…» al inicio (app/saludo.py: quitar_presentacion)."""
+    if not conv.greeted:
+        return texto, False
+    limpio, quito = saludo.quitar_presentacion(texto)
+    if quito:
+        logger.info("turno %s: la respuesta volvía a saludar — le quito el saludo", identity)
+    return limpio, quito
 
 
 def _respuesta_invalida(texto: str | None, previos: list[str]) -> str | None:
