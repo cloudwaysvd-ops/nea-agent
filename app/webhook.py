@@ -140,8 +140,11 @@ def extract_inbound(payload: dict[str, Any]) -> list[InboundMessage]:
             value = (change or {}).get("value") or {}
             contacts = value.get("contacts") or []
             profile_name = None
+            username = None
             if contacts and isinstance(contacts[0], dict):
-                profile_name = (contacts[0].get("profile") or {}).get("name")
+                perfil = contacts[0].get("profile") or {}
+                profile_name = perfil.get("name")
+                username = perfil.get("username")
             for msg in value.get("messages") or []:
                 if not isinstance(msg, dict):
                     continue
@@ -193,6 +196,7 @@ def extract_inbound(payload: dict[str, Any]) -> list[InboundMessage]:
                         text=_extract_text(msg),
                         referral_headline=str(referral) if referral else None,
                         profile_name=str(profile_name) if profile_name else None,
+                        username=str(username).strip() if username else None,
                         media_id=str(media["id"]) if media.get("id") else None,
                         media_mime=media.get("mime_type"),
                         media_filename=media.get("filename"),

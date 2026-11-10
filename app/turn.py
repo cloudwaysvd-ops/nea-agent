@@ -551,6 +551,9 @@ async def run_turn(
     if not crm_conv_id:
         logger.warning("turno %s: contexto sin conversationId — silencio", identity)
         return
+    # Fork: el @ de WhatsApp a la ficha, aunque un asesor tenga la
+    # conversación: es justo quien lo necesita cuando no llegó el teléfono.
+    await _guardar_usuario(ctx, context, str(crm_conv_id), inbound, identity)
     if not conversation_info.get("aiEnabled", False):
         logger.info("turno %s: aiEnabled=false (handoff activo) — silencio", identity)
         # Fork: el cliente que espera al asesor recibe un «ya le avisé» desde
@@ -894,6 +897,45 @@ async def _reabrir(ctx: AppContext, conv: Any, identity: str) -> None:
     conv.stall_since_message_id = desde
     if conv.crm_conversation_id:
         await _anotar_cierre(ctx, str(conv.crm_conversation_id), None, identity)
+
+
+FICHA_USUARIO = "usuario_whatsapp"
+
+
+def _usuario_del_turno(inbound: list[InboundMessage]) -> str | None:
+    """El @ más reciente de la ráfaga, siempre con su arroba."""
+    for m in reversed(inbound):
+        usuario = (m.username or "").strip().lstrip("@").strip()
+        if usuario:
+            return f"@{usuario}"
+    return None
+
+
+async def _guardar_usuario(
+    ctx: AppContext,
+    context: dict[str, Any],
+    crm_conv_id: str,
+    inbound: list[InboundMessage],
+    identity: str,
+) -> None:
+    """Anota en la ficha el nombre de usuario de WhatsApp, si Meta lo mandó.
+
+    Solo escribe si cambió: el CRM fusiona la ficha, así que la clave va
+    sola. Best-effort: si el CRM falla, el turno sigue igual.
+    """
+    usuario = _usuario_del_turno(inbound)
+    if not usuario:
+        return
+    ficha = (context.get("contact") or {}).get("ficha") or {}
+    if isinstance(ficha, dict) and ficha.get(FICHA_USUARIO) == usuario:
+        return
+    try:
+        await ctx.crm.put_ficha(crm_conv_id, {FICHA_USUARIO: usuario})
+        logger.info("turno %s: usuario de WhatsApp anotado en la ficha", identity)
+    except Exception as exc:
+        logger.warning(
+            "turno %s: no pude anotar el usuario de WhatsApp (%s)", identity, exc
+        )
 
 
 async def _anotar_cierre(
