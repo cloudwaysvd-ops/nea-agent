@@ -96,3 +96,50 @@ def mensajes(saludo: str, respuesta: str | None) -> list[str]:
     if not texto:
         return [saludo.strip()]
     return [sin_pregunta_final(saludo), texto]
+
+
+# --- Fork: sin re-saludo (2026-11-10) ---------------------------------------
+# El saludo lo manda el código, así que el modelo nunca «se ve» saludando: en
+# el turno siguiente volvía a decir «¡Hola Felipe! 👋 Te habla Diana de
+# Bogotana de Baterías…» (1 de cada 3 conversaciones del 7 al 9 de noviembre).
+# Y una vez que hay un re-saludo en el historial, el modelo lo copia en cada
+# turno y pierde el hilo. Con la conversación ya saludada, el código le quita
+# a la respuesta el saludo y la presentación del arranque; al historial entra
+# limpia, para que el modelo no aprenda el patrón.
+
+YA_SALUDASTE = (
+    "- Ya saludaste y te presentaste en esta conversación (está arriba, en el "
+    "historial). NO vuelvas a saludar ni a presentarte: nada de «Hola», «Te "
+    "habla Diana» ni las 4.9 estrellas al inicio. Contesta directo a lo que "
+    "escribió el lead, retomando lo que ya te dijo."
+)
+
+# «¡Hola!», «Hola Juan,», «¡Hola, Luis! 👋», «¡Hola de nuevo!», «Buenas tardes».
+# El nombre va con mayúscula y seguido de signo: «Hola, sigo pendiente…» no
+# pierde el «sigo».
+_SALUDO_INICIAL = re.compile(
+    r"^\s*¡?\s*(?i:hola|buenas(?:\s+(?:tardes|noches))?|buen(?:os)?\s+d[ií]as?)\b"
+    r"(?i:\s+de\s+nuevo)?"
+    r"(?:\s*,?\s*[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?=\s*[!.,👋]))?"
+    r"\s*[!¡.,]*\s*(?:👋\s*)?"
+)
+# «Te habla Diana de Bogotana de Baterías, la mejor calificada de Bogotá ⭐ 4.9
+# con más de 700 reseñas en Google.» — hasta el fin de esa oración (el punto
+# de «4.9» no cuenta: va pegado a un dígito).
+_PRESENTACION = re.compile(
+    r"^\s*(?i:te\s+habla|aqu[ií](?:\s+te\s+habla)?|soy)\s+(?i:diana)\b"
+    r"[^\n]*?(?:[.!](?=\s|$)|\n|$)\s*"
+)
+
+
+def quitar_presentacion(texto: str | None) -> tuple[str | None, bool]:
+    """Le quita el saludo y la presentación del inicio. → (texto, ¿quitó algo?)."""
+    if not texto:
+        return texto, False
+    sin = _SALUDO_INICIAL.sub("", texto, count=1)
+    sin = _PRESENTACION.sub("", sin, count=1).lstrip()
+    if sin == texto.lstrip():
+        return texto, False
+    if sin:
+        sin = sin[0].upper() + sin[1:]
+    return sin, True

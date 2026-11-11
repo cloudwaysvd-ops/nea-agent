@@ -552,6 +552,9 @@ async def run_turn(
     if not crm_conv_id:
         logger.warning("turno %s: contexto sin conversationId — silencio", identity)
         return
+    # Fork: el @ de WhatsApp a la ficha, aunque un asesor tenga la
+    # conversación: es justo quien lo necesita cuando no llegó el teléfono.
+    await _guardar_usuario(ctx, context, str(crm_conv_id), inbound, identity)
     if not conversation_info.get("aiEnabled", False):
         logger.info("turno %s: aiEnabled=false (handoff activo) — silencio", identity)
         # Fork: el cliente que espera al asesor recibe un «ya le avisé» desde
@@ -715,7 +718,15 @@ async def run_turn(
     final_text, filtrada = limpiar_herramienta_filtrada(final_text)
     if filtrada:
         logger.warning("turno %s: el modelo escribió una herramienta como texto — la corto", identity)
+    # La repetición se mira ANTES de quitar el saludo: un mensaje repetido
+    # entero se pide de nuevo, no se manda recortado.
     motivo = _respuesta_invalida(final_text, previos)
+    resaludo = False
+    if motivo is None:
+        final_text, resaludo = _sin_resaludo(conv, final_text, identity)
+        motivo = _respuesta_invalida(final_text, previos)
+        if motivo is None and resaludo and not (final_text or "").strip():
+            motivo = SOLO_RESALUDO
     # Fork: con el catálogo en la hoja, la red de precios valida contra sus
     # líneas (mismo texto que tenían en el conocimiento).
     kb_precios = await _kb_para_precios(ctx, profile.kb_text)
@@ -734,8 +745,12 @@ async def run_turn(
         except LlmExhausted:
             final_text = None
         final_text, filtrada = limpiar_herramienta_filtrada(final_text)
+        repetida = _respuesta_invalida(final_text, previos)
+        final_text, resaludo = _sin_resaludo(conv, final_text, identity)
         if (
             final_text is None
+            or repetida
+            or (resaludo and not final_text.strip())
             or _respuesta_invalida(final_text, previos)
             or cotizacion_ajena(final_text, kb_precios)
             or (filtrada and not final_text.strip())
@@ -887,6 +902,45 @@ async def _reabrir(ctx: AppContext, conv: Any, identity: str) -> None:
     conv.stall_since_message_id = desde
     if conv.crm_conversation_id:
         await _anotar_cierre(ctx, str(conv.crm_conversation_id), None, identity)
+
+
+FICHA_USUARIO = "usuario_whatsapp"
+
+
+def _usuario_del_turno(inbound: list[InboundMessage]) -> str | None:
+    """El @ más reciente de la ráfaga, siempre con su arroba."""
+    for m in reversed(inbound):
+        usuario = (m.username or "").strip().lstrip("@").strip()
+        if usuario:
+            return f"@{usuario}"
+    return None
+
+
+async def _guardar_usuario(
+    ctx: AppContext,
+    context: dict[str, Any],
+    crm_conv_id: str,
+    inbound: list[InboundMessage],
+    identity: str,
+) -> None:
+    """Anota en la ficha el nombre de usuario de WhatsApp, si Meta lo mandó.
+
+    Solo escribe si cambió: el CRM fusiona la ficha, así que la clave va
+    sola. Best-effort: si el CRM falla, el turno sigue igual.
+    """
+    usuario = _usuario_del_turno(inbound)
+    if not usuario:
+        return
+    ficha = (context.get("contact") or {}).get("ficha") or {}
+    if isinstance(ficha, dict) and ficha.get(FICHA_USUARIO) == usuario:
+        return
+    try:
+        await ctx.crm.put_ficha(crm_conv_id, {FICHA_USUARIO: usuario})
+        logger.info("turno %s: usuario de WhatsApp anotado en la ficha", identity)
+    except Exception as exc:
+        logger.warning(
+            "turno %s: no pude anotar el usuario de WhatsApp (%s)", identity, exc
+        )
 
 
 async def _anotar_cierre(
@@ -1071,6 +1125,23 @@ CORRIGE_RESPUESTA = (
     "WhatsApp que responde a su ÚLTIMO mensaje, en tu voz y sin repetir nada "
     "que ya le hayas escrito."
 )
+
+
+SOLO_RESALUDO = (
+    "solo volvía a saludar y a presentarte, y eso ya lo hiciste al principio: "
+    "contesta directo a lo que escribió el lead"
+)
+
+
+def _sin_resaludo(conv: Any, texto: str | None, identity: str) -> tuple[str | None, bool]:
+    """Fork: con la conversación ya saludada, la respuesta sale sin «¡Hola X! 👋
+    Te habla Diana…» al inicio (app/saludo.py: quitar_presentacion)."""
+    if not conv.greeted:
+        return texto, False
+    limpio, quito = saludo.quitar_presentacion(texto)
+    if quito:
+        logger.info("turno %s: la respuesta volvía a saludar — le quito el saludo", identity)
+    return limpio, quito
 
 
 def _respuesta_invalida(texto: str | None, previos: list[str]) -> str | None:

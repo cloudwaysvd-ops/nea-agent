@@ -379,6 +379,9 @@ def build_system_prompt(
             "- Es el PRIMER contacto: saluda transparente, gancho + UNA pregunta."
             + (" Personaliza el saludo mencionando el anuncio." if headline else "")
         )
+    else:
+        # Fork: el saludo ya salió (lo manda el código): que no lo repita.
+        lines.append(saludo.YA_SALUDASTE)
 
     if offered:
         slot_txt = "; ".join(

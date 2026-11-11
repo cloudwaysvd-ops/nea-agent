@@ -637,3 +637,68 @@ async def test_url_secreta_responde_el_challenge(url_client):
     assert ok.status_code == 200 and ok.text == "reto-123"
     otra_ruta = await url_client.get("/webhook/" + "x" * 40, params=params)
     assert otra_ruta.status_code == 404
+
+
+# ---------------------------------------------- fork: usuario de WhatsApp ---
+
+
+def test_el_usuario_de_whatsapp_sale_del_perfil():
+    [msg] = extract_inbound(
+        _payload_bsuid(
+            {"from_user_id": "CO.77"},
+            [{"user_id": "CO.77", "profile": {"name": "Ana", "username": "anacaro"}}],
+        )
+    )
+    assert msg.username == "anacaro"
+    [sin] = extract_inbound(_payload_bsuid({"from_user_id": "CO.78"}))
+    assert sin.username is None
+
+
+async def _turno_con_usuario(respx_mock, contacts, ficha=None, ai_enabled=True):
+    ctx = make_ctx()
+    routes = mock_crm_basics(respx_mock, ai_enabled=ai_enabled)
+    contexto = crm_context(ai_enabled=ai_enabled)
+    contexto["contact"]["ficha"] = ficha or {}
+    routes["context"].mock(return_value=httpx.Response(200, json=contexto))
+    app = create_app(ctx=ctx)
+    cuerpo = json.dumps(_payload_bsuid({"from_user_id": "CO.77"}, contacts)).encode()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://bot.test"
+    ) as client:
+        assert (await client.post("/webhook", content=cuerpo)).status_code == 200
+        await asyncio.sleep(0.35)
+    await ctx.crm.aclose()
+    return [json.loads(c.request.content)["ficha"] for c in routes["ficha"].calls]
+
+
+async def test_el_usuario_queda_en_la_ficha(respx_mock):
+    fichas = await _turno_con_usuario(
+        respx_mock, [{"user_id": "CO.77", "profile": {"name": "Ana", "username": "anacaro"}}]
+    )
+    assert {"usuario_whatsapp": "@anacaro"} in fichas
+
+
+async def test_el_usuario_se_guarda_aunque_lo_atienda_un_asesor(respx_mock):
+    fichas = await _turno_con_usuario(
+        respx_mock,
+        [{"user_id": "CO.77", "profile": {"name": "Ana", "username": "@anacaro"}}],
+        ai_enabled=False,
+    )
+    assert fichas == [{"usuario_whatsapp": "@anacaro"}]
+
+
+async def test_no_reescribe_un_usuario_que_ya_esta(respx_mock):
+    fichas = await _turno_con_usuario(
+        respx_mock,
+        [{"user_id": "CO.77", "profile": {"name": "Ana", "username": "anacaro"}}],
+        ficha={"usuario_whatsapp": "@anacaro"},
+        ai_enabled=False,
+    )
+    assert fichas == []
+
+
+async def test_sin_usuario_no_toca_la_ficha(respx_mock):
+    fichas = await _turno_con_usuario(
+        respx_mock, [{"user_id": "CO.77", "profile": {"name": "Ana"}}], ai_enabled=False
+    )
+    assert fichas == []

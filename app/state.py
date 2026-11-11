@@ -158,6 +158,9 @@ class InboundMessage:
     text: str | None = None
     referral_headline: str | None = None
     profile_name: str | None = None
+    # Fork: el nombre de usuario de WhatsApp (`contacts[].profile.username`),
+    # si lo tiene. Con él, Meta muchas veces no manda el teléfono.
+    username: str | None = None
     # Multimedia (spec 002): lo mínimo para procesar el contenido.
     media_id: str | None = None
     media_mime: str | None = None
