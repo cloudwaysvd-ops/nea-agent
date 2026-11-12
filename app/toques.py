@@ -59,6 +59,27 @@ def es_urgencia(texto: str | None) -> bool:
     return bool(_URGENCIA_RE.search(_norm(texto)))
 
 
+# «Ya no la necesito» = el cliente se bajó (la compró en otro lado, ya la
+# cambió…). Lo decide el código, igual que la urgencia: con eso se cortan los
+# toques y el empujón, y no vuelven aunque luego escriba «gracias». Solo
+# frases inequívocas: «en otro lado la dejan más barata» o «no me interesa la
+# Bosch» son de un cliente que SIGUE comprando, y no cortan nada.
+_RECHAZO_RE = re.compile(
+    r"\bya (la|lo|las|los) (consegui|conseguimos|compre|compramos|cambie|cambiamos"
+    r"|instale|instalamos|resolvi|solucione)\b"
+    r"|\bya (me|nos) (la|lo) (instalaron|cambiaron|vendieron|pusieron|consiguieron)\b"
+    r"|\bya (compre|compramos)\b"
+    r"|\b(la|lo) (consegui|conseguimos|compre|compramos) (en|con) (otro|otra|el proveedor)\b"
+    r"|\bya no (la |lo |las |los )?(necesito|necesitamos|requiero|voy a necesitar)\b"
+    r"|\b(ya|por ahora|de momento|por el momento) no (me|nos) interesa\b"
+    r"|^\W*no (me|nos) interesa\W*(gracias)?\W*$",
+)
+
+
+def es_rechazo(texto: str | None) -> bool:
+    return bool(_RECHAZO_RE.search(_norm(texto).strip()))
+
+
 # La respuesta al carro varado: visita técnica con su precio (y cotizar de una).
 _VISITA_RE = re.compile(r"visita tecnica")
 _PRECIO_RE = re.compile(r"\$\s*\d")
@@ -176,6 +197,18 @@ def al_cerrar_turno(
 ) -> dict[str, Any] | None:
     """Lo que el final del turno guarda para los toques, o None si no aplican
     (entonces sigue el empujón único). Solo se llama si el turno SÍ envió."""
+    if es_rechazo(texto_cliente):
+        # El cliente se bajó: ni toques ni empujón, y `cotizada` en falso para
+        # que un «gracias» después no los vuelva a arrancar. Solo una
+        # cotización nueva de Diana los reactiva.
+        return {
+            "cotizada": False,
+            "urgente": False,
+            "toque": 0,
+            "toques_desde": None,
+            "followup_due_at": None,
+            "followup_sent": True,
+        }
     if not settings.toques_activos:
         return None
     urgente = bool(conv.urgente) or es_urgencia(texto_cliente)

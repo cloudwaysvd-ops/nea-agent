@@ -408,3 +408,76 @@ async def test_la_ia_no_deja_comillas_alrededor(respx_mock):
     await FollowupWorker(ctx).tick()
     assert _enviados(messages) == [REDACTADOS[0]]
     await ctx.crm.aclose()
+
+
+# ------------------------------------------------- el cliente se bajó ---
+# Caso real (Reynel, 10 y 11-nov): «ya la conseguí con el proveedor de
+# siempre» y, más tarde, «ya no la necesito». Cada mensaje suyo volvía a
+# arrancar los 3 toques, y le llegaron 5 seguimientos después de despedirse.
+
+RECHAZOS = [
+    "garcias...ya la consegui con el proveedor de siempre",
+    "ya no la necesito",
+    "Ya no necesito, gracias",
+    "ya compré, gracias",
+    "Ya me la instalaron ayer",
+    "la conseguí en otro lado",
+    "Ya la cambié",
+    "por ahora no me interesa",
+    "No me interesa, gracias",
+]
+SIGUE_COMPRANDO = [
+    "no me interesa la Bosch, mejor la Willard",
+    "en otro lado me la dejan más barata",
+    "todavía no la consigo",
+    "¿ya la tienen disponible?",
+    "ya tengo la dirección: calle 145 # 19-30",
+    "la necesito ya, urgente",
+    "ya no arranca el carro",
+    None,
+]
+
+
+def test_es_rechazo():
+    for t in RECHAZOS:
+        assert toques.es_rechazo(t), t
+    for t in SIGUE_COMPRANDO:
+        assert not toques.es_rechazo(t), t
+
+
+async def test_si_el_cliente_se_bajo_no_hay_toques_ni_con_un_gracias_despues(respx_mock):
+    ctx = _ctx()
+    conv, _ = await _cotizada(ctx, hace_minutos=5)
+    mock_crm_basics(respx_mock)
+    ctx.llm.replies = [
+        LlmReply(content="¡Con gusto, Reynel! Cuando necesites otra, por aquí estamos 🙌"),
+        LlmReply(content="¡A ti! 🙌"),
+    ]
+
+    await _post(ctx, wa_body(text="garcias...ya la consegui con el proveedor de siempre"))
+    assert conv.followup_due_at is None
+    assert conv.toques_desde is None and not conv.cotizada
+    assert conv.followup_sent, "tampoco el empujón único"
+
+    await _post(ctx, wa_body(text="gracias", wamid="wamid.002"))
+    await ctx.crm.aclose()
+    assert conv.followup_due_at is None, "un «gracias» no reabre los toques"
+    assert conv.toques_desde is None
+
+
+async def test_despues_de_bajarse_una_cotizacion_nueva_si_reactiva_los_toques(respx_mock):
+    ctx = _ctx()
+    conv, _ = await _cotizada(ctx, hace_minutos=5)
+    mock_crm_basics(respx_mock)
+    ctx.llm.replies = [
+        LlmReply(content="¡Con gusto! Por aquí estamos 🙌"),
+        LlmReply(content=COTIZACION.replace("Para tu Renault Logan", "Para el Logan de tu esposa")),
+    ]
+
+    await _post(ctx, wa_body(text="ya no la necesito"))
+    assert conv.followup_due_at is None
+
+    await _post(ctx, wa_body(text="ahora necesito una para el Logan de mi esposa", wamid="wamid.002"))
+    await ctx.crm.aclose()
+    assert conv.cotizada and conv.toque == 0
+    assert conv.followup_due_at == conv.toques_desde + timedelta(minutes=20)
