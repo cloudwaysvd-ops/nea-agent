@@ -117,6 +117,15 @@ def _nombra(texto: set[str], modelo: str) -> bool:
     return not propias or bool(propias & texto)
 
 
+def _nombra_carro(texto: set[str], modelo: str) -> bool:
+    """Como _nombra, pero estricto: las genéricas y las de pura marca no cuentan."""
+    if any(g in modelo.lower() for g in _GENERICAS):
+        return False
+    marca, *resto = modelo.split(maxsplit=1)
+    propias = _palabras(resto[0] if resto else "") - _VACIAS - _palabras(marca)
+    return bool(propias & texto)
+
+
 def cotizacion_ajena(texto: str | None, kb_text: str | None) -> str | None:
     """Por qué esta cotización no sale tal cual del catálogo, o None si sale.
 
@@ -148,6 +157,14 @@ def cotizacion_ajena(texto: str | None, kb_text: str | None) -> str | None:
             "precios); no completes con líneas de otra ficha"
         )
     nombradas = _palabras(texto)
+    # Fork: precio de una batería pedida por su nombre, antes de saber el carro
+    # (buscar_bateria). Si el mensaje no cotiza para un carro («para tu …») ni
+    # nombra ningún carro del catálogo, y cada opción existe tal cual, no copió
+    # la ficha de otro carro: es el precio de esa batería.
+    if not re.search(r"\bpara\s+(tu|su|el|la)\b", _norm(texto)) and not any(
+        _nombra_carro(nombradas, m) for m in fichas
+    ):
+        return None
     if not any(_nombra(nombradas, m) for m in candidatas):
         return (
             f"copió la ficha de otro carro ({candidatas[0]}). Busca la ficha del carro "

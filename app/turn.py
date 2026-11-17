@@ -34,6 +34,7 @@ from app.stall import (
 from app.profile import resolve_profile
 from app.prompt import build_system_prompt
 from app.redes import limpiar_herramienta_filtrada, promete_aviso, cotizacion_ajena
+from app.catalogo import TOOL_BATERIA as BATERIA_TOOL
 from app.catalogo import TOOL_SCHEMA as CATALOGO_TOOL
 from app.state import AppContext, InboundMessage, utcnow
 from app.tools import ToolRuntime, tool_schemas
@@ -1196,7 +1197,7 @@ def _herramientas(ctx: AppContext) -> list[dict[str, Any]]:
         bool(getattr(ctx.crm, "supports_coordination", False)),
     )
     if ctx.catalogo is not None:
-        schemas = [*schemas, CATALOGO_TOOL]  # copia: TOOL_SCHEMAS no se toca
+        schemas = [*schemas, CATALOGO_TOOL, BATERIA_TOOL]  # copia: TOOL_SCHEMAS no se toca
     return schemas
 
 

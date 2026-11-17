@@ -90,6 +90,29 @@ TOOL_SCHEMA: dict[str, Any] = {
     },
 }
 
+TOOL_BATERIA: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "buscar_bateria",
+        "description": (
+            "Trae del catálogo el precio de una batería que el cliente pide por su "
+            "nombre (marca, caja o amperaje: «Bosch caja 42 970», «Mac 34», «NS40») "
+            "y las otras marcas de esa misma caja. Úsala cuando el cliente pide una "
+            "batería concreta y todavía no dijo el carro."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "bateria": {
+                    "type": "string",
+                    "description": "La batería como la escribió el cliente",
+                }
+            },
+            "required": ["bateria"],
+        },
+    },
+}
+
 INSTRUCCION_PROMPT = (
     "CATÁLOGO DE FICHAS: las fichas de cada modelo (medida, referencias, garantía, "
     "precios y su pregunta obligatoria o excepción) NO están en el conocimiento: se "
@@ -98,7 +121,15 @@ INSTRUCCION_PROMPT = (
     "buscar_ficha con ese carro ANTES de responder —antes de cotizar, de preguntar la "
     "versión y antes de escalar—: la ficha dice qué preguntar y qué versiones sí se "
     "cotizan. Copia sus líneas tal cual. Si el carro no está en el Índice o "
-    "buscar_ficha no trae ficha, no cotices: ruta segura."
+    "buscar_ficha no trae ficha, no cotices: ruta segura.\n"
+    "BATERÍA ESPECÍFICA: si el cliente pide una batería concreta (marca, caja o "
+    "amperaje, p. ej. «Bosch caja 42 970») y todavía no dijo el carro, llama "
+    "buscar_bateria y responde en ESTE orden: primero el precio de esa batería (el "
+    "normal y el de entregando la usada), luego las otras marcas que tenemos en esa "
+    "misma caja con su precio, y al final pregunta para qué carro es. Escríbelo en "
+    "texto corrido o lista corta, sin el formato de cotización (sin ⭐ ni 💰). No "
+    "digas que le sirve a su carro: cuando diga el carro, busca su ficha; si su carro "
+    "no lleva esa caja, díselo y cotízale su ficha."
 )
 
 _SI = {"si", "sí", "x", "true", "1", "verdadero", "yes"}
@@ -123,6 +154,15 @@ def _pesos(valor: str) -> str | None:
     if not digitos:
         return None
     return f"{int(digitos):,}".replace(",", ".")
+
+
+MARCAS_BATERIA = ("willard", "mac", "bosch", "varta", "alphaline", "moura")
+MEDIDAS_BATERIA = {"ns40", "ns60", "27", "31h", "34", "35", "36", "42", "48", "49", "65", "ln3", "ln4"}
+
+
+def _tokens_bateria(texto: str) -> tuple[str, ...]:
+    """Como _tokens, pero «42-970» son dos palabras (caja y amperaje)."""
+    return tuple(re.findall(r"[a-z0-9ñ]+", _norm(re.sub(r"[-–/]", " ", texto or ""))))
 
 
 def _clave(nombre: str) -> str:
@@ -292,6 +332,104 @@ class Catalogo:
 
     def _marcas(self) -> set[str]:
         return {t for f in self.fichas for t in _tokens(f.marca)}
+
+    # ---- Fork: precio por batería (marca, caja o amperaje), sin carro ----
+    def referencias(self) -> list[Opcion]:
+        """Una opción por referencia (la misma batería vale igual en todas las fichas)."""
+        vistas: dict[str, Opcion] = {}
+        for f in self.fichas:
+            for o in f.opciones:
+                if o.no_se_cotiza or not o.garantia.isdigit():
+                    continue
+                vistas.setdefault(_clave(o.referencia) + o.medida, o)
+        return list(vistas.values())
+
+    def buscar_bateria(self, consulta: str) -> tuple[list[Opcion], list[Opcion]]:
+        """(las que pidió, las de su misma caja). Vacías si no se reconoce."""
+        q = _tokens_bateria(consulta)
+        refs = self.referencias()
+        marcas = {m for m in MARCAS_BATERIA if m in q}
+        medidas = {t for t in q if t in MEDIDAS_BATERIA}
+        amperios = {t for t in q if t.isdigit() and 400 <= int(t) <= 2000}
+
+        def caja(o: Opcion) -> set[str]:
+            return {t for t in _tokens_bateria(o.medida) if t in MEDIDAS_BATERIA}
+
+        def toks(o: Opcion) -> set[str]:
+            return set(_tokens_bateria(o.referencia))
+
+        if not (marcas or medidas):
+            return [], []
+        cand = [o for o in refs
+                if (not medidas or caja(o) & medidas) and (not marcas or toks(o) & marcas)]
+        exactas = [o for o in cand if amperios and toks(o) & amperios]
+        pedidas = exactas or cand
+        if not pedidas:
+            # Pidió una marca que no tenemos en esa caja: se ofrece la caja.
+            if medidas:
+                return [], sorted((o for o in refs if caja(o) & medidas),
+                                  key=lambda o: int(o.precio.replace(".", "")))
+            return [], []
+        cajas = set().union(*(caja(o) for o in pedidas)) if medidas or len({frozenset(caja(o)) for o in pedidas}) == 1 else set()
+        misma = sorted((o for o in refs if cajas and caja(o) & cajas and o not in pedidas),
+                       key=lambda o: int(o.precio.replace(".", "")))
+        pedidas = sorted(pedidas, key=lambda o: int(o.precio.replace(".", "")))
+        return pedidas, misma
+
+    def consultar_bateria(self, consulta: str) -> dict[str, Any]:
+        """Respuesta de la herramienta buscar_bateria."""
+        pedidas, misma = self.buscar_bateria(consulta)
+
+        def renglon(o: Opcion) -> str:
+            return (f"- {o.referencia} (caja {o.medida}): ${o.precio} · ${o.usada} entregando "
+                    f"la usada · garantía {o.garantia} meses")
+
+        if not pedidas and misma:
+            return {
+                "ok": True,
+                "referencias": [o.referencia for o in misma],
+                "resultado": (
+                    "Esa marca no la tenemos en esa caja. En esa misma caja tenemos:\n"
+                    + "\n".join(renglon(o) for o in misma)
+                    + "\n\nDíselo, dale estos precios y al final pregunta para qué carro "
+                    "es. Sin el formato de cotización (sin ⭐ ni 💰)."
+                ),
+            }
+        if not pedidas:
+            return {
+                "ok": True,
+                "referencias": [],
+                "resultado": (
+                    f"No reconozco «{consulta}» como una batería del catálogo. No des "
+                    "precio de memoria: pregunta para qué carro es y cotiza con su ficha."
+                ),
+            }
+        cajas_pedidas = {o.medida for o in pedidas}
+        if len(cajas_pedidas) > 1:
+            precios = sorted(int(o.precio.replace(".", "")) for o in pedidas)
+            desde = f"{precios[0]:,}".replace(",", ".")
+            hasta = f"{precios[-1]:,}".replace(",", ".")
+            return {
+                "ok": True,
+                "referencias": [o.referencia for o in pedidas],
+                "resultado": (
+                    f"Esa batería viene en varias cajas ({', '.join(sorted(cajas_pedidas))}): "
+                    f"va desde ${desde} hasta ${hasta} según la caja.\n"
+                    + "\n".join(renglon(o) for o in pedidas)
+                    + f"\n\nDile que va desde ${desde} según la caja que lleve su carro, y "
+                    "pregunta para qué carro es. No le des la lista completa. Sin el "
+                    "formato de cotización (sin ⭐ ni 💰)."
+                ),
+            }
+        texto = "La que pidió (o la más parecida que tenemos):\n" + "\n".join(renglon(o) for o in pedidas)
+        if misma:
+            texto += "\n\nOtras marcas en esa misma caja:\n" + "\n".join(renglon(o) for o in misma)
+        texto += (
+            "\n\nResponde en este orden: precio de la que pidió, las otras marcas de esa "
+            "caja, y al final pregunta para qué carro es. Sin el formato de cotización "
+            "(sin ⭐ ni 💰). No digas que le sirve a su carro hasta tener su ficha."
+        )
+        return {"ok": True, "referencias": [o.referencia for o in pedidas], "resultado": texto}
 
     def consultar(self, consulta: str) -> dict[str, Any]:
         """Respuesta de la herramienta buscar_ficha."""
